@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Metodika populačného edukátora RRZ</title>
+  <meta name="description" content="Metodika, zdroje, kalibrácia a obmedzenia interaktívneho populačného edukátora RRZ.">
+  <link rel="icon" href="assets/logo-rrz.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="style.css">
+  <script src="vendor/katex/katex.min.js" defer></script>
+  <script src="vendor/katex/contrib/auto-render.min.js" defer></script>
+  <script src="metodika.js" type="module"></script>
+</head>
+<body class="doc-page">
+<a class="skip-link" href="#main">Preskočiť na obsah</a>
+
+<header class="app-header doc-header">
+  <a class="brand" href="./" aria-label="Späť na simulátor">
+    <img class="brand-logo" src="assets/logo-rrz.svg" alt="RRZ" width="92" height="41">
+  </a>
+  <span class="brand-divider" aria-hidden="true"></span>
+  <h1 class="app-title">Metodika populačného edukátora</h1>
+  <nav class="header-actions" aria-label="Navigácia">
+    <a class="header-link" href="./">← Simulátor</a>
+  </nav>
+</header>
+
+<div class="doc-layout">
+  <nav class="doc-toc" aria-label="Obsah">
+    <ol>
+      <li><a href="#ucel">1. Účel a rozsah</a></li>
+      <li><a href="#demografia">2. Demografický modul</a></li>
+      <li><a href="#trh-prace">3. Trh práce</a></li>
+      <li><a href="#ukazovatele">4. Ukazovatele</a></li>
+      <li><a href="#kalibracia">5. Kalibrácia a zdroje</a></li>
+      <li><a href="#obmedzenia">6. Obmedzenia</a></li>
+      <li><a href="#overenie">7. Overenie</a></li>
+      <li><a href="#zmeny">8. Zmeny po audite</a></li>
+      <li><a href="#literatura">Literatúra</a></li>
+    </ol>
+  </nav>
+
+  <main class="doc" id="main">
+    <section id="ucel">
+      <h2>1. Účel a rozsah</h2>
+      <p class="lead">Nástroj ukazuje, ako plodnosť, úmrtnosť, migrácia a parametre trhu práce menia vekovú štruktúru obyvateľstva Slovenska
+        a pomer medzi pracujúcimi a poberateľmi dávok. Ide o deterministickú projekciu typu „čo ak“ pri zadaných predpokladoch –
+        <strong>nie o prognózu ani oficiálnu projekciu RRZ</strong>.</p>
+      <ul>
+        <li>Horizont 2024–2100 (rovnaký ako projekcia Eurostatu EUROPOP2023); stav obyvateľstva vždy k 1. januáru.</li>
+        <li>Vek 0–99 po jednotlivých rokoch a otvorený interval 100+, obe pohlavia; jednotky tisíce osôb.</li>
+        <li>Každá kohorta sa delí do 8 vzájomne sa vylučujúcich stavov na trhu práce (kapitola 3).</li>
+        <li>Výpočet prebieha v prehliadači (Web Worker); stav posuvníkov sa ukladá do odkazu, takže scenár sa dá zdieľať a zopakovať.</li>
+      </ul>
+    </section>
+
+    <section id="demografia">
+      <h2>2. Demografický modul</h2>
+
+      <h3>2.1 Úmrtnostná tabuľka</h3>
+      <p>Z jednoročných pravdepodobností úmrtia \(q_x\) sa zostaví úmrtnostná tabuľka s radixom \(l_0 = 1\):</p>
+      $$d_x = l_x\,q_x,\qquad l_{x+1} = l_x - d_x,\qquad L_x = l_{x+1} + a_x\,d_x,$$
+      <p>kde \(a_0 = 0{,}1\) (dojčenecké úmrtia sú sústredené na začiatok roka) a \(a_x = 0{,}5\) pre \(x \ge 1\). Otvorený interval 100+ má konštantnú intenzitu úmrtnosti \(m_{100} = -\ln(1 - q_{100})\):</p>
+      $$L_{100+} = \frac{l_{100}}{m_{100}},\qquad T_x = \sum_{y \ge x} L_y,\qquad e_x = \frac{T_x}{l_x}.$$
+
+      <h3>2.2 Projekcia o jeden rok (kohortno-komponentná metóda)</h3>
+      <p>Prechod z 1. 1. roka \(t\) na 1. 1. roka \(t+1\) (Preston, Heuveline a Guillot, 2001):</p>
+      $$P_{x+1}(t+1) = P_x(t)\,\frac{L_{x+1}}{L_x} + M_{x+1}(t),\qquad x = 0,\dots,98,$$
+      $$P_{100+}(t+1) = \bigl(P_{99}(t) + P_{100+}(t)\bigr)\,\frac{T_{100}}{T_{99}} + M_{100+}(t),$$
+      $$B(t) = \sum_x f_x(t)\,\frac{F_x(t) + F_x(t+1)}{2},\qquad P_0(t+1) = B(t)\,\sigma\,\frac{L_0}{l_0} + M_0(t).$$
+      <p>\(F_x\) sú ženy vo veku \(x\) (expozícia je priemer začiatku a konca roka, teda vrátane prisťahovaných žien), \(\sigma\) je podiel chlapcov medzi živonarodenými (0,512, t. j. asi 105 chlapcov na 100 dievčat; pre dievčatá \(1-\sigma\)) a \(M_x(t)\) čistá migrácia podľa veku na konci roka. Ak by vysťahovanie prevýšilo veľkosť kohorty, kohorta sa obmedzí nulou. Model spĺňa bilanciu \(P(t+1) = P(t) + B(t) - D(t) + M(t)\) presne (overuje audit).</p>
+
+      <h3>2.3 Zlepšovanie úmrtnosti (Lee-Carter)</h3>
+      $$\ln m_{x,t} = a_x + b_x\,k_t,\qquad a_x = \ln m_{x,t_0},\qquad \sum_x b_x = 1,\qquad k_t = k_T\,\frac{t - t_0}{T - t_0},\quad T = 2100.$$
+      <p>Index \(k_T\) sa pre každé pohlavie nájde bisekciou tak, aby stredná dĺžka života pri narodení v roku 2100 zodpovedala posuvníku; \(k_{t_0} = 0\) reprodukuje úmrtnosť základného roka. Vekový profil \(b_x\) je prvý singulárny vektor centrovanej matice \(\ln m_{x,t}\) za 25 rokov pred základným rokom bez rokov 2020–2022 (COVID-19). Kým nie je k dispozícii historická úmrtnosť, použije sa rovnomerný profil, ktorý nad 85 rokov lineárne klesá na 25 % v 100 rokoch.</p>
+
+      <h3>2.4 Plodnosť</h3>
+      $$f_x(t) = \mathrm{TFR}(t)\,\phi_x,\qquad \sum_x \phi_x = 1,\qquad \mathrm{TFR}(t) = \mathrm{TFR}_{t_0} + \bigl(\mathrm{TFR}^{*} - \mathrm{TFR}_{t_0}\bigr)\min\!\Bigl(1, \frac{t - t_0}{T^{*} - t_0}\Bigr),$$
+      <p>kde \(\phi_x\) je vekový profil plodnosti základného roka, \(\mathrm{TFR}^{*}\) cieľová hodnota a \(T^{*}\) rok dosiahnutia cieľov (posuvníky).</p>
+
+      <h3>2.5 Migrácia</h3>
+      <p>Čistá migrácia \(N(t)\) sa mení lineárne k cieľu rovnako ako TFR. Vysťahovanie \(E\) zostáva na úrovni základného roka so svojím vekovým profilom \(\varepsilon_x\); zmena sa premietne do prisťahovania s profilom \(\iota_x\):</p>
+      $$M_x(t) = \bigl(N(t) + E\bigr)\,\iota_x - E\,\varepsilon_x,\qquad \sum_x \iota_x = \sum_x \varepsilon_x = 1.$$
+      <p>Takto sa vekový profil nerozpadne ani pri saldách blízkych nule. Pri predbežnej kalibrácii je \(E = 0\) a \(\iota_x\) gaussovský profil (priemer 27 rokov, smerodajná odchýlka 12 rokov, vek 0–60).</p>
+    </section>
+
+    <section id="trh-prace">
+      <h2>3. Trh práce</h2>
+      <p>Každá kohorta \(N\) (vek \(x\), pohlavie) sa postupne (podmienene) rozdelí do 8 stavov, takže ich súčet sa vždy rovná populácii kohorty. Pre \(x &lt; 15\) patria všetci do stavu „deti a študenti“. Pre \(x \ge 15\):</p>
+      $$R = N\,r(x'),\qquad D = \min\bigl(N - R,\; N\,\delta\,d(x')\bigr),\qquad S = (N - R - D)\,s(x - \Delta_s),$$
+      $$A = (N - R - D - S)\,a(x'),\qquad I = N - R - D - S - A,$$
+      $$U = A\,u(x)\,\lambda_U,\qquad Z = (A - U)\Bigl(p(x) + f_x(t)\,\tfrac{34}{52}\Bigr),\qquad W = A - U - Z,$$
+      $$\check{W} = W\,\pi(x)\,\lambda_P,\qquad \hat{W} = W - \check{W}.$$
+      <table>
+        <thead><tr><th>Symbol</th><th>Stav / profil</th></tr></thead>
+        <tbody>
+          <tr><td>\(R,\ r(x)\)</td><td>starobný dôchodca (vrátane predčasného dôchodku) – podiel na populácii</td></tr>
+          <tr><td>\(D,\ d(x),\ \delta\)</td><td>invalidný dôchodca; \(\delta\) je posuvník „Invalidita (násobok)“</td></tr>
+          <tr><td>\(S,\ s(x),\ \Delta_s\)</td><td>študent dennej formy; \(\Delta_s\) je posun dĺžky štúdia</td></tr>
+          <tr><td>\(A,\ a(x)\)</td><td>ekonomicky aktívni medzi osobami, ktoré nie sú dôchodcami ani študentmi; ženám 25–45 rokov sa pripočíta posuvník „Aktivita žien“</td></tr>
+          <tr><td>\(I\)</td><td>neaktívny (napr. rodičovská dovolenka, starostlivosť, iné)</td></tr>
+          <tr><td>\(U,\ u(x),\ \lambda_U\)</td><td>nezamestnaný; \(\lambda_U\) sa v každom roku nastaví tak, aby \(\sum U / \sum A\) zodpovedalo posuvníku</td></tr>
+          <tr><td>\(Z,\ p(x)\)</td><td>PN alebo materská: podiel zamestnaných na PN + materská (plodnosť × 34 týždňov)</td></tr>
+          <tr><td>\(\check{W},\ \pi(x),\ \lambda_P\)</td><td>čiastočný úväzok; \(\lambda_P\) zabezpečí agregátny podiel podľa posuvníka</td></tr>
+          <tr><td>\(\hat{W}\)</td><td>zamestnaný na plný úväzok</td></tr>
+        </tbody>
+      </table>
+
+      <h3>3.1 Zmena dôchodkového veku</h3>
+      <p>Vekové profily základného roka sa čítajú v „efektívnom veku“ \(x'\). Pri dôchodkovom veku \(R^{*}\) a referenčnom veku \(R_{t_0}\) (rozdiel \(\Delta = R^{*} - R_{t_0}\)) platí</p>
+      $$x' = \begin{cases} x, & x \le 50,\\[2pt] 50 + (x - 50)\,\dfrac{R^{*} - w - \Delta - 50}{R^{*} - w - 50}, & 50 &lt; x &lt; R^{*} - w,\\[8pt] x - \Delta, & x \ge R^{*} - w, \end{cases}\qquad w = \min\Bigl(5, \frac{R^{*} - 50}{2}\Bigr).$$
+      <p>Posledných \(w\) rokov pred dôchodkovým vekom (predčasné dôchodky, skok pri dôchodkovom veku) sa tak posúva bez skreslenia a profil medzi 50 rokmi a týmto pásmom sa plynulo natiahne. Pri naviazaní na strednú dĺžku života v 65 rokoch (priemer mužov a žien) sa dôchodkový vek v čase mení ako</p>
+      $$R^{*}(t) = R^{*} + \gamma\,\bigl(\bar e_{65}(t) - \bar e_{65}(t_0)\bigr),\qquad \gamma \in [0, 1].$$
+
+      <h3>3.2 Prepočet miery aktivity z VZPS</h3>
+      <p>Výberové zisťovanie pracovných síl (VZPS, Eurostat <code>lfsa_argan</code>) udáva aktivitu \(a^{V}(x)\) celej populácie. Model potrebuje aktivitu osôb mimo dôchodcov a študentov:</p>
+      $$a(x) = \frac{a^{V}(x) - w_s\,s(x) - w_d\,d(x) - w_r(x)\,r(x)}{1 - s(x) - d(x) - r(x)},$$
+      <p>kde \(w_s = 0{,}10\) je predpokladaný podiel aktívnych študentov, \(w_d = 0{,}30\) podiel aktívnych invalidných dôchodcov a \(w_r(x) = a^{V}(x)\) nad referenčným dôchodkovým vekom (pracujúci dôchodcovia), inak 0 (poberateľ predčasného dôchodku nesmie byť zamestnaný). Profily z 5-ročných skupín VZPS sa na jednotlivé roky veku prevádzajú lineárnou interpoláciou medzi stredmi skupín.</p>
+    </section>
+
+    <section id="ukazovatele">
+      <h2>4. Ukazovatele</h2>
+      <ul>
+        <li><strong>Platitelia</strong> \(= \sum \hat{W} + 0{,}5\sum \check{W}\); <strong>poberatelia</strong> \(= \sum (U + Z + D + R)\).</li>
+        <li><strong>Poberatelia na 100 platiteľov</strong> \(= 100 \cdot \text{poberatelia} / \text{platitelia}\). Farba porovnáva s hodnotou roka 2024 pri predvolených predpokladoch: zelená = nižšia, oranžová = vyššia najviac o 20 %, červená = vyššia o viac ako 20 %.</li>
+        <li><strong>Starobná závislosť</strong> \(= 100 \cdot P_{65+} / P_{20\text{–}64}\) (konvencia správy Ageing Report Európskej komisie; Eurostat ako hlavný ukazovateľ používa menovateľ 15–64).</li>
+        <li><strong>Priemerný vek</strong> \(= \sum_x (x + 0{,}5)\,P_x / \sum_x P_x\) (pre 100+ sa použije 101,5); <strong>medián</strong> sa interpoluje v rámci roku veku.</li>
+        <li><strong>Pohyb v roku</strong> (živonarodení, zomretí, migrácia) sa vzťahuje na udalosti počas zvoleného roka, teda medzi 1. 1. zvoleného a nasledujúceho roka.</li>
+      </ul>
+    </section>
+
+    <section id="kalibracia">
+      <h2>5. Kalibrácia a zdroje</h2>
+      <p id="calibrationSummary" class="callout">Načítavam stav kalibrácie…</p>
+      <table id="calibrationTable">
+        <thead><tr><th>Zložka</th><th>Stav</th><th>Zdroj / poznámka</th><th>Rok</th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <h3>Ako doplniť oficiálne dáta</h3>
+      <p>Súbory CSV (exporty z Eurostatu vo formáte SDMX-CSV a niekoľko jednoduchých tabuliek zo Sociálnej poisťovne) sa uložia do priečinka
+        <code>data/raw/</code> a spustí sa <code>node tools/build_data.mjs</code>. Skript nahradí predbežné profily, zapíše zdroj a rok každej
+        zložky a stránka zobrazí nový stav. Zoznam a presné filtre súborov sú v <a href="https://github.com/odu01/DYNAMIC_PYRAMID_WEB/blob/main/data/raw/README.md">data/raw/README.md</a>.</p>
+      <h3>Predpoklady spracovania dát</h3>
+      <ul id="assumptionsList"></ul>
+    </section>
+
+    <section id="obmedzenia">
+      <h2>6. Obmedzenia</h2>
+      <ul>
+        <li><strong>Deterministická projekcia.</strong> Žiadne intervaly neistoty; výsledky po roku 2070 sú veľmi citlivé na predpoklady o plodnosti a migrácii.</li>
+        <li><strong>Predbežná kalibrácia.</strong> Kým nie sú nahraté oficiálne dáta, vstupy sú parametrické odhady. Audit ukazuje odchýlky od skutočnosti v základnom roku (napr. počet zomretých asi o 10 %, populácia o 1,5 %), preto úrovne slúžia len na ilustráciu.</li>
+        <li><strong>Statický trh práce.</strong> Vekové profily aktivity, nezamestnanosti, invalidity a štúdia zostávajú na úrovni základného roka; model nezachytáva kohortové efekty (napr. rastúcu vzdelanosť či zamestnanosť žien v starších ročníkoch) ani väzbu na mzdy a hospodársky cyklus.</li>
+        <li><strong>Prekrývanie stavov.</strong> Každá osoba patrí do jediného stavu. Pracujúci dôchodcovia sú len medzi dôchodcami, pracujúci študenti a invalidní dôchodcovia nie sú medzi zamestnanými.</li>
+        <li><strong>Zjednodušené kategórie.</strong> „Platitelia“ a „poberatelia“ nie sú fiškálne toky: model neráta výšku odvodov ani dávok a nie každý nezamestnaný poberá dávku.</li>
+        <li><strong>Dôchodkový vek.</strong> Jedna hodnota pre pohlavie a rok, nie podľa ročníka narodenia a počtu vychovaných detí; naviazanie na e65 je štylizované a zmena platí pre celé obdobie, nie po ročníkoch.</li>
+        <li><strong>Úmrtnosť.</strong> Lee-Carter s lineárnym indexom a nemenným vekovým profilom zlepšovania (bez „rotácie“ k vyššiemu veku).</li>
+        <li><strong>Plodnosť a migrácia.</strong> Nemenný tvar vekového profilu plodnosti (bez posunu k vyššiemu veku matiek); migranti majú rovnakú plodnosť a úmrtnosť ako ostatné obyvateľstvo a nemenný vekový profil.</li>
+        <li><strong>Materská.</strong> Podiel na materskej = plodnosť × 34/52 roka a uplatňuje sa len na zamestnané ženy, čo predpokladá rovnakú plodnosť zamestnaných a nezamestnaných žien.</li>
+        <li><strong>Bez regionálneho členenia.</strong> Model počíta len za Slovensko ako celok.</li>
+      </ul>
+    </section>
+
+    <section id="overenie">
+      <h2>7. Overenie</h2>
+      <ul>
+        <li><code>node tools/audit.mjs</code> overuje invarianty a porovná základný rok so štatistikami. Invarianty: súčet stavov = populácia kohorty, demografická bilancia, dosiahnutie cieľového e0, agregátna nezamestnanosť a podiel čiastočných úväzkov a smer účinkov posuvníkov.</li>
+        <li><code>node tools/test_pipeline.mjs</code> spracuje syntetické CSV v rovnakých formátoch ako skutočné exporty a overí, že výstup zodpovedá vstupom. Zahŕňa aj odhad \(b_x\), extrapoláciu úmrtnosti 85+ a výber variantu projekcie.</li>
+        <li><code>node tools/e2e.mjs</code> otestuje stránku v prehliadači na počítači aj mobile (ovládanie, odkaz so scenárom, exporty, konzola bez chýb).</li>
+        <li>Knižnice sú uložené v repozitári (<code>vendor/</code>): d3 7.9.0, Observable Plot 0.6.17, KaTeX 0.18.11.</li>
+      </ul>
+    </section>
+
+    <section id="zmeny">
+      <h2>8. Zmeny po audite (11/2026)</h2>
+      <ul>
+        <li>Opravené poprehadzované súbory repozitára; doplnené chýbajúce <code>worker.js</code> a <code>data/anchors.json</code>.</li>
+        <li>PN a materská vracali NaN (výpočtu chýbala TFR) – opravené.</li>
+        <li>Skupina 100+ každý rok celá vymrela – zavedený otvorený interval s prežívaním \(T_{100}/T_{99}\).</li>
+        <li>Úmrtnosť bola do roku 2150 konštantná – zavedené zlepšovanie podľa Lee-Cartera s cieľovým e0.</li>
+        <li>Pôrody sa počítali len zo žien k 1. 1. a novorodenci neumierali – teraz priemerná expozícia a prežitie \(L_0/l_0\).</li>
+        <li>Miera aktivity sa uplatňovala až po odčítaní študentov a invalidných (dvojité odčítanie) a parameter „aktivita žien 25–45“ menil všetky vekové skupiny. Výsledkom bola zamestnanosť 15–64 len 51 %. Teraz podmienené profily a posun len pre ženy 25–45.</li>
+        <li>Invalidita bola podhodnotená (asi 29 tis. poberateľov) – nový profil (predbežne asi 235 tis.).</li>
+        <li>Nezamestnanosť bola rovnaká vo všetkých vekových skupinách – teraz vekový profil škálovaný na zadanú celkovú mieru.</li>
+        <li>„Priemerný vek“ bol o pol roka nižší (chýbalo +0,5) – opravené, doplnený medián.</li>
+        <li>Farebné prahy pomeru boli bez opory (rok 2024 bol hneď červený) – teraz porovnanie s rokom 2024.</li>
+        <li>Desatinná čiarka (sk-SK), prekreslenie pri zmene veľkosti okna, prístupnosť ovládacích prvkov, horizont 2100 namiesto 2150.</li>
+      </ul>
+    </section>
+
+    <section id="literatura">
+      <h2>Literatúra</h2>
+      <ul class="references">
+        <li>Preston, S. H., Heuveline, P., Guillot, M. (2001). <em>Demography: Measuring and Modeling Population Processes.</em> Oxford: Blackwell.</li>
+        <li>Lee, R. D., Carter, L. R. (1992). Modeling and Forecasting U.S. Mortality. <em>Journal of the American Statistical Association</em>, 87(419), 659–671.</li>
+        <li>European Commission (2024). <em>The 2024 Ageing Report: Economic and Budgetary Projections for the EU Member States (2022–2070).</em> Institutional Paper 279.</li>
+        <li>Eurostat. <em>EUROPOP2023 – Population projections at national level (2022–2100)</em>, databáza <code>proj_23n</code>, a demografické databázy <code>demo_pjan</code>, <code>demo_mlifetable</code>, <code>demo_fasfr</code>, <code>migr_imm1ctz</code>, <code>migr_emi2</code>, <code>lfsa_argan</code>, <code>lfsa_urgan</code>, <code>lfsa_eppgan</code>.</li>
+      </ul>
+    </section>
+  </main>
+</div>
+</body>
+</html>

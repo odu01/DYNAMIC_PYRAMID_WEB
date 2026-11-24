@@ -3,490 +3,162 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RRZ — Interaktívny populačný edukátor</title>
+  <title>Populačný edukátor RRZ</title>
+  <meta name="description" content="Interaktívny populačný edukátor RRZ: projekcia obyvateľstva Slovenska a trhu práce do roku 2100 s nastaviteľnými predpokladmi.">
+  <link rel="icon" href="assets/logo-rrz.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6"></script>
+  <script src="vendor/d3/d3.min.js" defer></script>
+  <script src="vendor/plot/plot.umd.min.js" defer></script>
+  <script src="app.js" type="module"></script>
 </head>
 <body>
+<a class="skip-link" href="#main">Preskočiť na graf</a>
 
-<div class="app-layout">
+<div class="app">
 
   <header class="app-header">
-    <div class="header-brand">
-      <svg class="header-logo" viewBox="0 0 1500 1000" xmlns="http://www.w3.org/2000/svg" aria-label="RRZ logo">
-        <polygon fill="#13B5EA" points="1179.62,429.9 935.96,771.06 935.96,673.56 1179.62,332.56"/>
-        <polygon fill="#58595B" points="1152.99,228.94 935.96,545.76 935.96,643.11 1179.62,301.95 1325.79,301.95 1377.98,228.94"/>
-        <path fill="#58595B" d="M122,643.1V354.9h125.2c18.1,0,33.8,3.2,47.3,9.5s23.9,15.3,31.2,26.8c7.3,11.5,11.2,25.1,11.2,40.7v4.9c0,17.3-4.1,31.2-12.4,41.9-8.3,10.7-18.4,18.5-30.5,23.4v7.3c11,0.6,19.4,4.3,25.6,11.3,6,7,9,16.2,9,27.9v94.3h-54.3V556.6c0-6.6-1.7-11.9-5.2-16.1-3.4-4.1-9.2-6.1-17.1-6.1h-75.8v108.7H122zM176.4,485h65c12.9,0,23-3.5,30.3-10.6,7.3-7,10.9-16.2,10.9-27.9v-4.1c0-11.5-3.5-20.8-10.7-27.9-7.2-7-17.3-10.6-30.5-10.6h-65V485z"/>
-        <path fill="#58595B" d="M382.2,643.1V354.9h125.2c18.1,0,33.8,3.2,47.3,9.5s23.9,15.3,31.2,26.8c7.3,11.5,11.2,25.1,11.2,40.7v4.9c0,17.3-4.1,31.2-12.4,41.9-8.3,10.7-18.4,18.5-30.5,23.4v7.3c11,0.6,19.4,4.3,25.6,11.3,6,7,9,16.2,9,27.9v94.3h-54.3V556.6c0-6.6-1.7-11.9-5.2-16.1-3.4-4.1-9.2-6.1-17.1-6.1h-75.8v108.7H382.2zM436.5,485h65c12.9,0,23-3.5,30.3-10.6,7.3-7,10.9-16.2,10.9-27.9v-4.1c0-11.5-3.5-20.8-10.7-27.9-7.2-7-17.3-10.6-30.5-10.6h-65V485z"/>
-        <path fill="#58595B" d="M634.3,643.1v-69.2l142.5-163.9v-6.6H638.4v-48.5h195.1v69.2L691.1,588v6.6h143.3v48.5H634.3z"/>
-      </svg>
-      <h1>Interaktívny populačný edukátor</h1>
-    </div>
+    <a class="brand" href="./" aria-label="Populačný edukátor RRZ – úvod">
+      <img class="brand-logo" src="assets/logo-rrz.svg" alt="RRZ" width="92" height="41">
+    </a>
+    <span class="brand-divider" aria-hidden="true"></span>
+    <h1 class="app-title"><span class="title-full">Interaktívny populačný edukátor</span><span class="title-short">Populačný edukátor</span></h1>
+    <nav class="header-actions" aria-label="Doplnkové odkazy">
+      <a id="calibrationBadge" class="calibration-badge" href="metodika.html#kalibracia" hidden>Predbežná kalibrácia</a>
+      <a class="header-link" href="metodika.html">Metodika</a>
+    </nav>
   </header>
 
-  <aside class="slider-panel" id="sliderPanel">
-    <div class="slider-content" id="sliderContent">
-
-    <div class="slider-section" id="sectionDemo">
-      <h3>Demografia</h3>
-      <div class="slider-section-body">
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">TFR (plodnosť)
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Priemerný počet detí na ženu. SK 2024: ~1,5. Hranica reprodukcie: 2,1.</span></span>
-          </span>
-          <span class="value" id="valTfr">1.5</span>
-        </div>
-        <input type="range" id="slTfr" min="0.5" max="3.0" value="1.5" step="0.1">
-      </div>
-
-      <div class="slider-pair">
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Úmrtnosť ♂
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Multiplikátor úmrtnosti mužov. 1,0 = baseline.</span></span>
-          </span>
-          <span class="value" id="valMortMale">1.00</span>
-        </div>
-        <input type="range" id="slMortMale" min="0.50" max="2.00" value="1.00" step="0.05">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Úmrtnosť ♀
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Multiplikátor úmrtnosti žien. Ženy majú nižšiu baseline úmrtnosť.</span></span>
-          </span>
-          <span class="value" id="valMortFemale">1.00</span>
-        </div>
-        <input type="range" id="slMortFemale" min="0.50" max="2.00" value="1.00" step="0.05">
-      </div>
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Migrácia (tis./rok)
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Čistá migrácia v tisícoch osôb ročne. Kladná = imigrácia.</span></span>
-          </span>
-          <span class="value" id="valMigration">1</span>
-        </div>
-        <input type="range" id="slMigration" min="-20" max="20" value="1" step="1">
-      </div>
-      </div>
+  <aside class="controls" id="controlsPanel" aria-label="Predpoklady projekcie">
+    <div class="controls-head">
+      <label class="field-label" for="scenarioSelect">Scenár</label>
+      <select id="scenarioSelect" class="select"></select>
     </div>
-
-    <div class="slider-section" id="sectionLabor">
-      <h3>Pracovný trh</h3>
-      <div class="slider-section-body">
-
-      <div class="slider-pair">
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Dôch. vek ♂
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">SK 2024: 63 rokov. +1 rok ≈ +1,5 % platiteľov.</span></span>
-          </span>
-          <span class="value" id="valRetireMale">63</span>
-        </div>
-        <input type="range" id="slRetireMale" min="60" max="70" value="63" step="1">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Dôch. vek ♀
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">SK 2024: ~63 rokov. Postupne sa vyrovnáva s mužmi.</span></span>
-          </span>
-          <span class="value" id="valRetireFemale">63</span>
-        </div>
-        <input type="range" id="slRetireFemale" min="57" max="70" value="63" step="1">
-      </div>
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Nezamestnanosť
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Cyklická nezamestnanosť. SK 2024: ~5,3 %.</span></span>
-          </span>
-          <span class="value" id="valUnemployment">5.0%</span>
-        </div>
-        <input type="range" id="slUnemployment" min="2" max="25" value="5.0" step="0.5">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Aktivita žien 25–45
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Ovplyvnená dostupnosťou škôlok. Škandinávia ~85 %, J. Európa ~65 %.</span></span>
-          </span>
-          <span class="value" id="valWomenActivity">75%</span>
-        </div>
-        <input type="range" id="slWomenActivity" min="50" max="95" value="75" step="1">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Čiastočné úväzky
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">NL ~50 %, SK ~5 %. Čiastočný úväzok = polovičný odvod.</span></span>
-          </span>
-          <span class="value" id="valPartTime">4%</span>
-        </div>
-        <input type="range" id="slPartTime" min="0" max="50" value="4" step="1">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Invalidita (×)
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Multiplikátor miery invalidity. Rastie s vekom.</span></span>
-          </span>
-          <span class="value" id="valDisability">1.0</span>
-        </div>
-        <input type="range" id="slDisability" min="0.5" max="3.0" value="1.0" step="0.1">
-      </div>
-
-      <div class="slider-group">
-        <div class="slider-label">
-          <span class="name">Dĺžka štúdia
-            <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Posun konca štúdia. +2 = dlhšie, −2 = skorší vstup na trh práce.</span></span>
-          </span>
-          <span class="value" id="valStudyShift">0</span>
-        </div>
-        <input type="range" id="slStudyShift" min="-2" max="2" value="0" step="0.5">
-      </div>
-      </div>
-    </div>
-
+    <div id="sliderSections" class="control-sections"></div>
+    <div class="controls-foot">
+      <button type="button" id="resetButton" class="button button-ghost">Obnoviť predvolené</button>
     </div>
   </aside>
 
-  <main class="main-content">
-    <div class="top-bar">
-      <div class="top-bar-row1">
-        <div class="year-display" id="yearDisplay">2024</div>
-        <button class="slider-toggle" id="sliderToggle">&#9881; Nastavenia &#9660;</button>
-        <button class="reset-btn" id="resetBtn">Reset</button>
+  <main class="main" id="main">
+    <div class="notice" id="provisionalNotice" role="note" hidden>
+      <p><strong>Výsledky sú ilustračné.</strong> Model má <span id="noticeStatus">predbežnú kalibráciu</span>:
+        časť vstupov sú dočasné parametrické odhady, nie oficiálne štatistiky.
+        <a href="metodika.html#kalibracia">Stav vstupov a zdroje</a></p>
+      <button type="button" id="dismissNotice" class="notice-close" aria-label="Skryť upozornenie">×</button>
+    </div>
+
+    <div class="toolbar">
+      <div class="year-block">
+        <span class="year-caption">Rok</span>
+        <output id="yearDisplay" class="year-value" for="yearSlider">2024</output>
       </div>
-      <div class="support-ratio-display" id="supportRatioDisplay">
-        <div class="ratio-value ratio-green" id="ratioValue">—</div>
-        <div class="ratio-detail-text" id="ratioDetail"></div>
-      </div>
-      <div class="year-slider-row">
-        <input type="range" id="slYear" min="2024" max="2150" value="2024" step="1">
+      <button type="button" id="playButton" class="icon-button" aria-label="Prehrať vývoj">
+        <svg class="icon-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9-5.5z"/></svg>
+        <svg class="icon-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5h3v11H4zm5 0h3v11H9z"/></svg>
+      </button>
+      <input type="range" id="yearSlider" class="year-slider" min="2024" max="2100" step="1" value="2024" aria-label="Rok projekcie">
+      <span id="busyIndicator" class="busy" role="status" hidden>Počítam…</span>
+      <div class="toolbar-actions">
+        <button type="button" id="toggleControls" class="button mobile-only" aria-expanded="false" aria-controls="controlsPanel">Predpoklady</button>
+        <button type="button" id="toggleStats" class="button mobile-only" aria-expanded="false" aria-controls="statsPanel">Štatistiky</button>
+        <label class="checkbox" id="benchmarkLabel"><input type="checkbox" id="benchmarkToggle"> EUROPOP2023</label>
+        <button type="button" id="shareButton" class="button">Zdieľať</button>
+        <div class="menu">
+          <button type="button" id="exportButton" class="button" aria-expanded="false" aria-controls="exportMenu">Export</button>
+          <div class="menu-list" id="exportMenu" hidden>
+            <button type="button" data-export="png">Pyramída – obrázok PNG</button>
+            <button type="button" data-export="svg">Pyramída – vektor SVG</button>
+            <button type="button" data-export="pyramid">Pyramída – CSV (zvolený rok)</button>
+            <button type="button" data-export="series">Časové rady – CSV</button>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="pyramid-container" id="pyramidContainer"></div>
-    <div class="legend-container" id="legendContainer"></div>
+    <div class="kpis">
+      <div class="kpi kpi-primary">
+        <div class="kpi-label">Poberatelia na 100 platiteľov
+          <button type="button" class="info-button" id="ratioInfoButton" aria-label="Vysvetlenie: poberatelia na 100 platiteľov" aria-describedby="ratioTooltip">i</button>
+        </div>
+        <div class="kpi-row">
+          <span class="kpi-value" id="kpiRatioValue">—</span>
+          <span class="kpi-pill tone-neutral" id="kpiRatioPill"></span>
+        </div>
+        <div class="kpi-sub" id="kpiRatioReference"></div>
+        <div class="tooltip" id="ratioTooltip" role="tooltip">Poberatelia = starobní a invalidní dôchodcovia, nezamestnaní a osoby na PN či materskej. Platitelia = zamestnaní na plný úväzok + polovica čiastočných úväzkov. Zjednodušený ukazovateľ, nie fiškálny tok. Farba porovnáva s rokom 2024 pri predvolených predpokladoch.</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Starobná závislosť</div>
+        <div class="kpi-row"><span class="kpi-value" id="kpiDependencyValue">—</span></div>
+        <div class="kpi-sub">osôb 65+ na 100 osôb vo veku 20–64</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Obyvateľstvo</div>
+        <div class="kpi-row"><span class="kpi-value" id="kpiPopulationValue">—</span></div>
+        <div class="kpi-sub" id="kpiPopulationChange"></div>
+      </div>
+    </div>
+
+    <section class="card pyramid-card" aria-label="Populačná pyramída">
+      <div class="pyramid" id="pyramidContainer"><p class="loading">Načítavam dáta…</p></div>
+      <div class="legend" id="legend" aria-label="Legenda – kliknutím skryjete alebo zobrazíte kategóriu"></div>
+    </section>
+
+    <section class="card series-card" aria-label="Časový vývoj">
+      <div class="series-head">
+        <label class="field-label" for="metricSelect">Časový vývoj</label>
+        <select id="metricSelect" class="select select-compact"></select>
+      </div>
+      <div class="series" id="seriesContainer"></div>
+    </section>
   </main>
 
-  <aside class="stats-panel" id="statsPanel">
-    <button class="stats-toggle" id="statsToggle">&#9881; Štatistiky &#9660;</button>
-    <div class="stats-content" id="statsContent">
-      <div class="stat-card">
-        <div class="stat-label">Celková populácia</div>
-        <div class="stat-value" id="statTotalPop">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Muži</div>
-        <div class="stat-value" id="statMalePop">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Ženy</div>
-        <div class="stat-value" id="statFemalePop">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Priemerný vek</div>
-        <div class="stat-value" id="statMedianAge">—</div>
-      </div>
-      <div class="stat-card stat-payers">
-        <div class="stat-label">Platitelia <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Zamestnaní na plný úväzok + 50 % čiastočných úväzkov (EMP_FULL + 0,5 × EMP_PART).</span></span></div>
-        <div class="stat-value" id="statPayers">—</div>
-        <div class="stat-detail" id="statPayersDetail"></div>
-      </div>
-      <div class="stat-card stat-recipients">
-        <div class="stat-label">Poberatelia <span class="slider-tooltip-icon" tabindex="0">i<span class="tooltip-text">Nezamestnaní + PN/Materská + Invalidní + Dôchodcovia (UNEMP + SICK_MAT + DISAB + RETIRED).</span></span></div>
-        <div class="stat-value" id="statRecipients">—</div>
-        <div class="stat-detail" id="statRecipientsDetail"></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Deti (0–19)</div>
-        <div class="stat-value" id="statChildren">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Produktívny vek (20–64)</div>
-        <div class="stat-value" id="statWorking">—</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">Seniori (65+)</div>
-        <div class="stat-value" id="statSeniors">—</div>
-      </div>
-    </div>
+  <aside class="stats" id="statsPanel" aria-label="Štatistiky zvoleného roka">
+    <section class="stat-group">
+      <h2>Obyvateľstvo <span class="stat-year">k 1. 1. <span id="statYear">2024</span></span></h2>
+      <dl>
+        <div><dt>Spolu</dt><dd id="statTotal">—</dd></div>
+        <div><dt>Muži</dt><dd id="statMale">—</dd></div>
+        <div><dt>Ženy</dt><dd id="statFemale">—</dd></div>
+        <div><dt>0–19 rokov</dt><dd id="statChildren">—</dd></div>
+        <div><dt>20–64 rokov</dt><dd id="statWorking">—</dd></div>
+        <div><dt>65+ rokov</dt><dd id="statSeniors">—</dd></div>
+        <div><dt>Priemerný vek</dt><dd id="statMeanAge">—</dd></div>
+        <div><dt>Medián veku</dt><dd id="statMedianAge">—</dd></div>
+      </dl>
+    </section>
+    <section class="stat-group">
+      <h2>Trh práce</h2>
+      <dl>
+        <div><dt>Platitelia</dt><dd id="statPayers">—</dd></div>
+        <div><dt>Poberatelia</dt><dd id="statRecipients">—</dd></div>
+        <div><dt>Aktivita žien 25–45</dt><dd id="statWomenActivity">—</dd></div>
+      </dl>
+    </section>
+    <section class="stat-group">
+      <h2>Pohyb v roku <span id="statMovementYear">2024</span></h2>
+      <dl>
+        <div><dt>Živonarodení</dt><dd id="statBirths">—</dd></div>
+        <div><dt>Zomretí</dt><dd id="statDeaths">—</dd></div>
+        <div><dt>Čistá migrácia</dt><dd id="statMigration">—</dd></div>
+      </dl>
+    </section>
+    <section class="stat-group">
+      <h2>Predpoklady v roku</h2>
+      <dl>
+        <div><dt>Plodnosť (TFR)</dt><dd id="statTfr">—</dd></div>
+        <div><dt>e0 muži / ženy</dt><dd id="statE0">—</dd></div>
+        <div><dt>Dôch. vek muži / ženy</dt><dd id="statRetireAge">—</dd></div>
+      </dl>
+    </section>
+    <p class="stats-note">Percentá sú podiely na celkovej populácii. Model je projekcia za daných predpokladov, nie prognóza. <a href="metodika.html#obmedzenia">Obmedzenia modelu</a></p>
   </aside>
 
 </div>
 
-<script type="module">
-import { renderPyramid, formatPopulation, buildLegendHTML } from './plot.js';
-
-const DEFAULTS = {
-  slYear: '2024', slTfr: '1.5',
-  slMortMale: '1.00', slMortFemale: '1.00', slMigration: '1',
-  slRetireMale: '63', slRetireFemale: '63', slUnemployment: '5.0',
-  slWomenActivity: '75', slPartTime: '4', slDisability: '1.0', slStudyShift: '0'
-};
-
-// ─── State ───────────────────────────────────────────────────────────────────
-let snapshots = null, stateSnapshots = null, ratioSeries = null, anchorData = null;
-const startYear = 2024, endYear = 2150;
-const hiddenStates = new Set();
-
-// ─── DOM refs ────────────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
-
-const sliders = {
-  year: $('slYear'), tfr: $('slTfr'),
-  mortMale: $('slMortMale'), mortFemale: $('slMortFemale'), migration: $('slMigration'),
-  retireMale: $('slRetireMale'), retireFemale: $('slRetireFemale'),
-  unemployment: $('slUnemployment'), womenActivity: $('slWomenActivity'),
-  partTime: $('slPartTime'), disability: $('slDisability'), studyShift: $('slStudyShift')
-};
-
-const vals = {
-  tfr: $('valTfr'),
-  mortMale: $('valMortMale'), mortFemale: $('valMortFemale'), migration: $('valMigration'),
-  retireMale: $('valRetireMale'), retireFemale: $('valRetireFemale'),
-  unemployment: $('valUnemployment'), womenActivity: $('valWomenActivity'),
-  partTime: $('valPartTime'), disability: $('valDisability'), studyShift: $('valStudyShift')
-};
-
-const statEls = {
-  totalPop: $('statTotalPop'), malePop: $('statMalePop'), femalePop: $('statFemalePop'),
-  medianAge: $('statMedianAge'), payers: $('statPayers'), payersDetail: $('statPayersDetail'),
-  recipients: $('statRecipients'), recipientsDetail: $('statRecipientsDetail'),
-  children: $('statChildren'), working: $('statWorking'), seniors: $('statSeniors')
-};
-
-const ratioEl = $('ratioValue');
-const ratioDetailEl = $('ratioDetail');
-const pyramidContainer = $('pyramidContainer');
-const yearDisplay = $('yearDisplay');
-const legendContainer = $('legendContainer');
-
-// ─── Worker ──────────────────────────────────────────────────────────────────
-const worker = new Worker('worker.js', { type: 'module' });
-
-worker.onmessage = e => {
-  if (e.data.type === 'result') {
-    snapshots = e.data.snapshots;
-    stateSnapshots = e.data.stateSnapshots;
-    ratioSeries = e.data.ratioSeries;
-    renderCurrentYear();
-  } else if (e.data.type === 'error') {
-    console.error('Simulation error:', e.data.message);
-  }
-};
-
-// ─── Params ──────────────────────────────────────────────────────────────────
-function getDemoParams() {
-  return {
-    tfr: +sliders.tfr.value, sexRatio: 0.512,
-    mortMale: +sliders.mortMale.value, mortFemale: +sliders.mortFemale.value,
-    migration: +sliders.migration.value
-  };
-}
-
-function getLaborParams() {
-  return {
-    retireAgeMale: +sliders.retireMale.value, retireAgeFemale: +sliders.retireFemale.value,
-    unemploymentRate: +sliders.unemployment.value / 100,
-    womenActivity25_45: +sliders.womenActivity.value / 100,
-    partTimeRate: +sliders.partTime.value / 100,
-    disabMult: +sliders.disability.value, studyShift: +sliders.studyShift.value
-  };
-}
-
-function requestSimulation() {
-  worker.postMessage({
-    type: 'simulate', params: getDemoParams(), laborParams: getLaborParams(),
-    startPop: anchorData[String(startYear)], startYear, endYear
-  });
-}
-
-// ─── Render ──────────────────────────────────────────────────────────────────
-function renderCurrentYear() {
-  if (!snapshots) return;
-  const year = +sliders.year.value;
-  const snap = snapshots[year];
-  if (!snap) return;
-
-  const stData = stateSnapshots ? stateSnapshots[year] : null;
-  renderPyramid(pyramidContainer, snap, {
-    stateData: stData, hiddenStates,
-    width: pyramidContainer.clientWidth - 20,
-    height: pyramidContainer.clientHeight - 20
-  });
-
-  const totalM = snap.male.reduce((s, v) => s + v, 0);
-  const totalF = snap.female.reduce((s, v) => s + v, 0);
-  const total = totalM + totalF;
-
-  statEls.totalPop.textContent = formatPopulation(total);
-  statEls.malePop.textContent = formatPopulation(totalM);
-  statEls.femalePop.textContent = formatPopulation(totalF);
-
-  let children = 0, working = 0, seniors = 0, weightedAge = 0;
-  for (let a = 0; a <= 100; a++) {
-    const cohort = (snap.male[a] || 0) + (snap.female[a] || 0);
-    weightedAge += a * cohort;
-    if (a <= 19) children += cohort;
-    else if (a <= 64) working += cohort;
-    else seniors += cohort;
-  }
-
-  statEls.medianAge.textContent = (total > 0 ? (weightedAge / total).toFixed(1) : '—') + ' rokov';
-  statEls.children.textContent = formatPopulation(children);
-  statEls.working.textContent = formatPopulation(working);
-  statEls.seniors.textContent = formatPopulation(seniors);
-
-  if (ratioSeries && ratioSeries[year]) {
-    const r = ratioSeries[year];
-    const inv = r.ratio > 0 ? (1 / r.ratio) : Infinity;
-
-    ratioEl.textContent = r.ratio > 0 && r.ratio < Infinity
-      ? `1 platiteľ na ${inv.toFixed(2)} poberateľa`
-      : '—';
-    ratioEl.className = 'ratio-value ' + (
-      r.ratio >= 2.5 ? 'ratio-green' : r.ratio >= 1.5 ? 'ratio-orange' : 'ratio-red'
-    );
-
-    ratioDetailEl.textContent = '';
-
-    statEls.payers.textContent = formatPopulation(r.payers);
-    statEls.payersDetail.textContent = `${(r.payers / total * 100).toFixed(1)} % populácie`;
-    statEls.recipients.textContent = formatPopulation(r.recipients);
-    statEls.recipientsDetail.textContent = `${(r.recipients / total * 100).toFixed(1)} % populácie`;
-  }
-
-  yearDisplay.textContent = year;
-}
-
-// ─── Events ──────────────────────────────────────────────────────────────────
-sliders.year.addEventListener('input', renderCurrentYear);
-
-let debounceTimer = null;
-function onParamChange() {
-  vals.tfr.textContent = (+sliders.tfr.value).toFixed(1);
-  vals.mortMale.textContent = (+sliders.mortMale.value).toFixed(2);
-  vals.mortFemale.textContent = (+sliders.mortFemale.value).toFixed(2);
-  vals.migration.textContent = (+sliders.migration.value).toFixed(0);
-  vals.retireMale.textContent = sliders.retireMale.value;
-  vals.retireFemale.textContent = sliders.retireFemale.value;
-  vals.unemployment.textContent = (+sliders.unemployment.value).toFixed(1) + '%';
-  vals.womenActivity.textContent = sliders.womenActivity.value + '%';
-  vals.partTime.textContent = sliders.partTime.value + '%';
-  vals.disability.textContent = (+sliders.disability.value).toFixed(1);
-  vals.studyShift.textContent = (+sliders.studyShift.value >= 0 ? '+' : '') + (+sliders.studyShift.value).toFixed(1);
-
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(requestSimulation, 100);
-}
-
-[sliders.tfr, sliders.mortMale, sliders.mortFemale, sliders.migration,
- sliders.retireMale, sliders.retireFemale, sliders.unemployment, sliders.womenActivity,
- sliders.partTime, sliders.disability, sliders.studyShift
-].forEach(s => s.addEventListener('input', onParamChange));
-
-// ─── Legend ──────────────────────────────────────────────────────────────────
-function refreshLegend() {
-  legendContainer.innerHTML = buildLegendHTML(hiddenStates);
-  legendContainer.querySelectorAll('.legend-item').forEach(item => {
-    item.addEventListener('click', () => {
-      const state = item.dataset.state;
-      hiddenStates.has(state) ? hiddenStates.delete(state) : hiddenStates.add(state);
-      refreshLegend();
-      renderCurrentYear();
-    });
-  });
-}
-
-// ─── Reset ───────────────────────────────────────────────────────────────────
-$('resetBtn').addEventListener('click', () => {
-  for (const [id, val] of Object.entries(DEFAULTS)) $(id).value = val;
-  onParamChange();
-});
-
-// ─── Collapsible panels ─────────────────────────────────────────────────────
-const sliderToggle = $('sliderToggle');
-const sliderContent = $('sliderContent');
-const sliderPanel = $('sliderPanel');
-
-sliderToggle.addEventListener('click', () => {
-  const open = sliderContent.classList.toggle('open');
-  sliderPanel.classList.toggle('panel-open', open);
-  sliderToggle.innerHTML = open ? '&#9881; Nastavenia &#9650;' : '&#9881; Nastavenia &#9660;';
-});
-
-const statsToggle = $('statsToggle');
-const statsContent = $('statsContent');
-
-statsToggle.addEventListener('click', () => {
-  const open = statsContent.classList.toggle('open');
-  statsToggle.innerHTML = open ? '&#9881; Štatistiky &#9650;' : '&#9881; Štatistiky &#9660;';
-});
-
-document.querySelectorAll('.slider-section h3').forEach(h3 => {
-  h3.addEventListener('click', () => h3.parentElement.classList.toggle('collapsed'));
-});
-
-// ─── Tooltip positioning (fixed, viewport-aware) ───────────────────────────
-document.querySelectorAll('.slider-tooltip-icon').forEach(icon => {
-  function positionTooltip() {
-    const tip = icon.querySelector('.tooltip-text');
-    if (!tip) return;
-    const rect = icon.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    tip.style.left = '';
-    tip.style.right = '';
-    tip.style.top = '';
-    tip.style.bottom = '';
-
-    // Try right of icon
-    if (rect.right + 12 + 260 < vw) {
-      tip.style.left = (rect.right + 8) + 'px';
-    } else {
-      // Left of icon
-      tip.style.right = (vw - rect.left + 8) + 'px';
-    }
-
-    // Vertically centered, clamped to viewport
-    const tipH = 80;
-    let top = rect.top + rect.height / 2 - tipH / 2;
-    top = Math.max(8, Math.min(top, vh - tipH - 8));
-    tip.style.top = top + 'px';
-  }
-
-  icon.addEventListener('mouseenter', positionTooltip);
-  icon.addEventListener('focus', positionTooltip);
-});
-
-// ─── Init ────────────────────────────────────────────────────────────────────
-async function init() {
-  try {
-    const resp = await fetch('data/anchors.json');
-    anchorData = await resp.json();
-    for (const [year, pop] of Object.entries(anchorData)) {
-      anchorData[year] = { male: Float64Array.from(pop.male), female: Float64Array.from(pop.female) };
-    }
-    refreshLegend();
-    requestSimulation();
-  } catch (err) {
-    console.error('Init failed:', err);
-    pyramidContainer.textContent = 'Chyba pri načítaní dát: ' + err.message;
-  }
-}
-
-init();
-</script>
-
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

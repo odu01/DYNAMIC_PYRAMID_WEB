@@ -1,39 +1,42 @@
-// worker.js — Web Worker: off-thread demographic simulation + labor state computation
+// worker.js -- Web Worker: runs the full simulation off the main thread
 //
-// Input message:  { type: 'simulate', params, laborParams, startPop, startYear, endYear }
-//   params      — { tfr, sexRatio, mortMale, mortFemale, migration }
-//   laborParams — { retireAgeMale, retireAgeFemale, unemploymentRate, womenActivity25_45,
-//                   partTimeRate, disabMult, studyShift }
-//   startPop    — { male: Float64Array(101), female: Float64Array(101) } (thousands)
-// Output message: { type: 'result', snapshots, stateSnapshots, ratioSeries }
-//   snapshots[year]      — { male, female }
-//   stateSnapshots[year] — Float64Array(101 * 2 * 8), layout [(age*2 + sex)*8 + state]
-//   ratioSeries[year]    — { payers, recipients, ratio }
-// Error message:  { type: 'error', message }
+// Messages in:
+//   { type: 'init', calibration }                                   -> { type: 'ready' }
+//   { type: 'simulate', requestId, startPopulation, scenario, startYear, endYear }
+//                                                                    -> { type: 'result', requestId, result }
+// On failure:                                                        -> { type: 'error', requestId, message }
+// `result` is the output of runSimulation() in model.js.
 
-import { runSimulation, computeAllStates } from './model.js';
+import { runSimulation } from './model.js';
 
-self.onmessage = e => {
-  const msg = e.data;
-  if (!msg || msg.type !== 'simulate') return;
+let calibration = null;
 
+/**
+ * Handle one message from the page (init or simulate) and post the answer back.
+ * Inputs:  event (MessageEvent; event.data = message object described in the file header)
+ * Output:  none (posts a message to the page)
+ * Example: worker.postMessage({ type: 'simulate', requestId: 3, startPopulation, scenario, startYear: 2024, endYear: 2100 })
+ */
+function handleWorkerMessage(event) {
+  const message = event.data || {};
   try {
-    const { params, laborParams, startPop, startYear, endYear } = msg;
-    const snapshots = runSimulation(startPop, params, startYear, endYear);
-
-    // allocateCohort needs TFR for the maternity-leave share
-    const laborWithTfr = { ...laborParams, tfr: params.tfr };
-
-    const stateSnapshots = {};
-    const ratioSeries = {};
-    for (let year = startYear; year <= endYear; year++) {
-      const result = computeAllStates(snapshots[year], laborWithTfr);
-      stateSnapshots[year] = result.states;
-      ratioSeries[year] = { payers: result.payers, recipients: result.recipients, ratio: result.ratio };
+    if (message.type === 'init') {
+      calibration = message.calibration;
+      self.postMessage({ type: 'ready' });
+      return;
     }
-
-    self.postMessage({ type: 'result', snapshots, stateSnapshots, ratioSeries });
-  } catch (err) {
-    self.postMessage({ type: 'error', message: err && err.message ? err.message : String(err) });
+    if (message.type === 'simulate') {
+      if (!calibration) throw new Error('Worker nebol inicializovaný (chýba kalibrácia).');
+      const result = runSimulation(message.startPopulation, message.scenario, calibration, message.startYear, message.endYear);
+      self.postMessage({ type: 'result', requestId: message.requestId, result });
+    }
+  } catch (error) {
+    self.postMessage({
+      type: 'error',
+      requestId: message.requestId,
+      message: error && error.message ? error.message : String(error)
+    });
   }
-};
+}
+
+self.onmessage = handleWorkerMessage;

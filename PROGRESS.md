@@ -1,171 +1,196 @@
-// plot.js — Population pyramid visualization (Observable Plot 0.6.x)
+# RRZ Interaktívny populačný simulátor — Aktuálny stav
 
-const AGE_BIN = 5;
-const MAX_AGE = 100;
-const NUM_BINS = Math.ceil((MAX_AGE + 1) / AGE_BIN);
+## Architektúra
 
-const STATE_NAMES = [
-  'EMP_FULL', 'EMP_PART', 'STUDENT', 'INACTIVE',
-  'UNEMP', 'SICK_MAT', 'DISAB', 'RETIRED'
-];
+```
+index.html        — App shell, UI, event handling (inline <script type="module">)
+model.js          — Cohort-component Leslie matrix model + waterfall labor allocation
+worker.js         — Web Worker: off-thread simulation + labor state computation
+plot.js           — Observable Plot 0.6.x pyramid rendering + legend
+style.css         — RRZ korporátna dark téma, responsive layout
+data/anchors.json — SK 2024 reálne demografické dáta (Eurostat/UN)
+```
 
-const STATE_COLORS = {
-  EMP_FULL: '#13B5EA',
-  EMP_PART: '#3657A7',
-  STUDENT:  '#DCB47B',
-  INACTIVE: '#58595B',
-  UNEMP:    '#9C479B',
-  SICK_MAT: '#37B268',
-  DISAB:    '#997468',
-  RETIRED:  '#D82727'
-};
+### Závislosti (CDN)
+- D3 v7 — `cdn.jsdelivr.net/npm/d3@7`
+- Observable Plot 0.6.x — `cdn.jsdelivr.net/npm/@observablehq/plot@0.6`
+- Inter font — Google Fonts
 
-const STATE_LABELS = {
-  EMP_FULL: 'Zamestnaný (plný)',
-  EMP_PART: 'Čiastočný úväzok',
-  STUDENT:  'Nezaopatrené deti',
-  INACTIVE: 'Neaktívny',
-  UNEMP:    'Nezamestnaný',
-  SICK_MAT: 'PN / Materská',
-  DISAB:    'Invalidný',
-  RETIRED:  'Dôchodca'
-};
+### Kľúčové exporty
+- `model.js` → `buildFertilityProfile`, `buildMigrationProfile`, `stepPopulation`, `runSimulation`, `allocateCohort`, `computeAllStates`
+- `plot.js` → `renderPyramid`, `formatPopulation`, `buildLegendHTML`
+- `worker.js` → Web Worker (postMessage API: `{type:'simulate', params, laborParams, startPop, startYear, endYear}`)
 
-const PLOT_STYLE = {
-  background: 'transparent',
-  color: '#94a3b8',
-  fontFamily: 'Inter, sans-serif',
-  fontSize: '13px',
-  fontWeight: '600'
-};
+## Simulačný model
 
-const STACK_ORDER = [7, 6, 5, 4, 3, 2, 1, 0];
+### Demografická projekcia
+- **Metóda:** Cohort-component Leslie matrix: P(t+1) = L(θ)·P(t) + M
+- **Kohorty:** 101 (vek 0–100), muži + ženy, jednotky: tisíce
+- **Fertilita:** Beta(3,4) ASFR profil, peak ~28 rokov, škálovanie podľa TFR
+- **Mortalita:** Gompertz-Makeham po veku 40, kalibrovaná na SK 2024 life tables
+  - Muži: `qx = 0.0020 × exp(0.095 × (vek − 40))`, e0 ≈ 74.4
+  - Ženy: `qx = 0.0012 × exp(0.092 × (vek − 40))`, e0 ≈ 81.0
+  - Kojenecká úmrtnosť: muži 5‰, ženy 4‰ (SK 2024)
+- **Migrácia:** Gaussovský profil (peak 27 rokov, rozpätie 0–60)
+- **Horizont:** 2024–2150
+- **Výpočet:** Web Worker (off-thread, neblokuje UI)
 
-const AGE_LABELS = (() => {
-  const labels = [];
-  for (let b = NUM_BINS - 1; b >= 0; b--) {
-    const s = b * AGE_BIN;
-    labels.push(s >= 100 ? '100+' : `${s}–${s + AGE_BIN - 1}`);
-  }
-  return labels;
-})();
+### Trh práce (waterfall alokácia)
+8 interných stavov vizualizovaných v pyramíde:
 
-function binLabel(binStart) {
-  return binStart >= 100 ? '100+' : `${binStart}–${binStart + AGE_BIN - 1}`;
-}
+| Stav | Kód | Farba | Hex |
+|------|-----|-------|-----|
+| Zamestnaný (plný) | EMP_FULL | Korporátna modrá | #13B5EA |
+| Čiastočný úväzok | EMP_PART | Tmavo modrá | #3657A7 |
+| Nezaopatrené deti | STUDENT | Korporátna zlatá | #DCB47B |
+| Neaktívny | INACTIVE | Korporátna sivá | #58595B |
+| Nezamestnaný | UNEMP | Fialová | #9C479B |
+| PN / Materská | SICK_MAT | Zelená | #37B268 |
+| Invalidný | DISAB | Hnedá | #997468 |
+| Dôchodca | RETIRED | Červená | #D82727 |
 
-// ─── Format population (thousands → display string) ──────────────────────────
+**Waterfall poradie:** Deti (0–14) → Dôchodcovia → Študenti (15–26) → Invalidní → Neaktívni → Nezamestnaní → PN/Materská → Čiastočný/Plný úväzok
 
-export function formatPopulation(thousands) {
-  return thousands >= 1e3
-    ? (thousands / 1e3).toFixed(2) + ' mil.'
-    : thousands.toFixed(0) + ' tis.';
-}
+**Support Ratio** = (EMP_FULL + 0.5 × EMP_PART) / (UNEMP + SICK_MAT + DISAB + RETIRED)
 
-function tickFormat(d) {
-  const abs = Math.abs(d);
-  if (abs >= 1e3) return `${(abs / 1e3).toFixed(1)}m`;
-  if (abs >= 1) return `${abs.toFixed(0)}`;
-  return '0';
-}
+**Kategória "Nezaopatrené deti"** = zlúčené deti (0–14, 100 % STUDENT) + študenti (15–26, klesajúca miera)
 
-// ─── Build stacked pyramid data ──────────────────────────────────────────────
+## Vizualizácia
 
-function buildPyramidData(snapshot, stateData, hiddenStates) {
-  const data = [];
-  let grandTotal = 0;
-  for (let a = 0; a <= MAX_AGE; a++) {
-    grandTotal += (snapshot.male[a] || 0) + (snapshot.female[a] || 0);
-  }
+- Stacked horizontal bar pyramída (Observable Plot 0.6.x)
+- ♂ Muži / ♀ Ženy piktogramy v grafe
+- 5-ročné vekové biny (0–4, 5–9, ..., 100+)
+- Os X: label `tis. osôb` (bez šípky, `labelArrow: 'none'`)
+- Tooltips: počet + % kohorty z celku
+- Interaktívna legenda — klik skryje/zobrazí kategóriu
+- Osi: semi-bold 13px, tick format `tis.` / `m` (milióny)
 
-  for (let b = 0; b < NUM_BINS; b++) {
-    const binStart = b * AGE_BIN;
-    const label = binLabel(binStart);
+## UI/UX
 
-    let binTotal = 0;
-    for (let a = binStart; a < binStart + AGE_BIN && a <= MAX_AGE; a++) {
-      binTotal += (snapshot.male[a] || 0) + (snapshot.female[a] || 0);
-    }
-    const pct = grandTotal > 0 ? (binTotal / grandTotal * 100).toFixed(1) : '0.0';
+### Desktop layout (>1024px)
+- 3-stĺpcový CSS Grid: sidebar 272px | main 1fr | stats 216px
+- Header: `RRZ | INTERAKTÍVNY POPULAČNÝ SIMULÁTOR` (bold 1.05rem), bez roku v headeri
+- Ľavý panel: compact view — párové slidre (Úmrtnosť ♂/♀, Dôch. vek ♂/♀) vedľa seba v `.slider-pair` gride
+- Vizuálne oddelenie sekcií (Demografia / Pracovný trh) tenkou border čiarou
+- Minimalizované vertikálne medzery pre zobrazenie bez skrolovania
+- Pravý panel: 9 stat kariet (grid layout: label | value | detail)
+- Top-bar: rok display + Reset button + support ratio KPI + year slider
+- Year slider: luxusný dizajn — zlatý kovový gradient track (16px), 32px thumb s tmavým vnútrom a zlatým okrajom
 
-    for (const stIdx of STACK_ORDER) {
-      const stateName = STATE_NAMES[stIdx];
-      if (hiddenStates && hiddenStates.has(stateName)) continue;
+### Tablet layout (≤1200px)
+- Sidebar 244px, stats 196px
 
-      let maleSum = 0, femaleSum = 0;
-      for (let a = binStart; a < binStart + AGE_BIN && a <= MAX_AGE; a++) {
-        maleSum += stateData[(a * 2) * 8 + stIdx] || 0;
-        femaleSum += stateData[(a * 2 + 1) * 8 + stIdx] || 0;
-      }
+### Mobile layout (≤1024px)
+- Jednostĺpcový grid (`grid-template-rows: auto`, `height: auto`)
+- Slider panel skrytý (`display: none`), otvorenie cez "Nastavenia" toggle
+- Slider content: 2-stĺpcový grid
+- Stats collapsible cez "Štatistiky" toggle, grid layout
+- Year slider: 14px track, 28px thumb
+- Kompaktné medzery (main padding 4px 10px, top-bar gap 3px)
 
-      const tip = `${label} · ${STATE_LABELS[stateName]}\n${formatPopulation(maleSum + femaleSum)} (${pct} % kohorta)`;
+### Malý mobile (≤640px)
+- Slider content: 1-stĺpcový grid
+- Pyramída: 48vh (min 240px, max 440px)
+- Touch-friendly: 20px slider thumb, 20px tooltip ikony
+- Tooltip: fixed sheet na spodku obrazovky
+- iOS: `padding-bottom: env(safe-area-inset-bottom)`
 
-      data.push(
-        { ageGroup: label, ageBin: binStart, sex: 'male', population: -maleSum, state: stateName, stateOrder: stIdx, tip },
-        { ageGroup: label, ageBin: binStart, sex: 'female', population: femaleSum, state: stateName, stateOrder: stIdx, tip }
-      );
-    }
-  }
-  return data;
-}
+## Korporátne farby RRZ
 
-// ─── Render pyramid ──────────────────────────────────────────────────────────
+Celá aplikácia používa výhradne korporátnu paletu:
 
-export function renderPyramid(container, snapshot, options = {}) {
-  const { stateData = null, hiddenStates = null, width, height } = options;
-  if (!stateData) return;
+| Názov | Hex | Použitie |
+|-------|-----|----------|
+| Korporátna modrá | #13B5EA | EMP_FULL |
+| Korporátna zlatá | #DCB47B | Akcent (slidre, hodnoty), STUDENT |
+| Korporátna sivá | #58595B | INACTIVE |
+| Tmavo modrá | #3657A7 | EMP_PART |
+| Hnedá | #997468 | DISAB |
+| Fialová | #9C479B | UNEMP |
+| Červená | #D82727 | RETIRED, ratio-red |
+| Zelená | #37B268 | SICK_MAT, ratio-green |
 
-  const w = Math.max(280, width || 600);
-  const h = Math.max(300, height || 500);
-  const narrow = w < 500;
+**Ďalšie farby UI:**
+- Body pozadie: #152343
+- Header pozadie: #203564
+- Surface (panely): #1e293b
+- Surface light: #273548
+- Border: #334155
+- Text: #cbd5e1 (primárny #f1f5f9, sekundárny #64748b)
+- Accent gold: #e2a553
 
-  const data = buildPyramidData(snapshot, stateData, hiddenStates);
-  const visibleStates = STATE_NAMES.filter(s => !hiddenStates || !hiddenStates.has(s));
+## Slidre s SK 2024 defaultmi
 
-  const plot = Plot.plot({
-    width: w, height: h,
-    marginLeft: narrow ? 40 : 54,
-    marginRight: narrow ? 10 : 18,
-    marginTop: 8,
-    marginBottom: narrow ? 32 : 40,
-    style: PLOT_STYLE,
-    x: { label: 'tis. osôb', labelArrow: 'none', tickFormat: tickFormat, ticks: 5 },
-    y: { domain: AGE_LABELS, label: null, tickSize: 0, padding: 0.08 },
-    color: {
-      domain: visibleStates,
-      range: visibleStates.map(s => STATE_COLORS[s]),
-      legend: false
-    },
-    marks: [
-      Plot.barX(data, Plot.stackX({
-        y: 'ageGroup', x: 'population', fill: 'state', order: 'stateOrder'
-      })),
-      Plot.ruleX([0], { stroke: '#334155', strokeWidth: 1 }),
-      Plot.text([{ label: '♂ Muži' }], {
-        frameAnchor: 'top-left', dx: 8, dy: 4,
-        fill: '#94a3b8', fontWeight: 'bold', fontSize: 11, text: 'label'
-      }),
-      Plot.text([{ label: '♀ Ženy' }], {
-        frameAnchor: 'top-right', dx: -8, dy: 4,
-        fill: '#94a3b8', fontWeight: 'bold', fontSize: 11, text: 'label'
-      }),
-      Plot.tip(data.filter(d => d.sex === 'female'), Plot.pointerY({
-        y: 'ageGroup', x: 'population', title: 'tip', frameAnchor: 'right'
-      }))
-    ]
-  });
+**Demografia:**
+| Parameter | ID | Default | Rozsah | Krok |
+|-----------|-----|---------|--------|------|
+| TFR (plodnosť) | slTfr | 1.5 | 0.5–5.0 | 0.1 |
+| Sex ratio | slSexRatio | 0.512 | 0.480–0.540 | 0.001 |
+| Úmrtnosť ♂ (×) | slMortMale | 1.00 | 0.50–2.00 | 0.05 |
+| Úmrtnosť ♀ (×) | slMortFemale | 1.00 | 0.50–2.00 | 0.05 |
+| Migrácia (tis./rok) | slMigration | 1 | −50–50 | 1 |
 
-  container.replaceChildren(plot);
-}
+**Pracovný trh:**
+| Parameter | ID | Default | Rozsah | Krok |
+|-----------|-----|---------|--------|------|
+| Dôch. vek ♂ | slRetireMale | 63 | 60–70 | 1 |
+| Dôch. vek ♀ | slRetireFemale | 63 | 57–70 | 1 |
+| Nezamestnanosť | slUnemployment | 5.0% | 2–25 | 0.5 |
+| Aktivita žien 25–45 | slWomenActivity | 75% | 50–95 | 1 |
+| Čiastočné úväzky | slPartTime | 4% | 0–50 | 1 |
+| Invalidita (×) | slDisability | 1.0 | 0.5–3.0 | 0.1 |
+| Dĺžka štúdia | slStudyShift | 0 | −2–2 | 0.5 |
 
-// ─── Legend HTML ──────────────────────────────────────────────────────────────
+**Reset button** — viditeľný na desktop aj mobile, obnoví všetky slidre na SK 2024 default hodnoty.
 
-export function buildLegendHTML(hiddenStates) {
-  return STATE_NAMES.map(name => {
-    const hidden = hiddenStates && hiddenStates.has(name);
-    return `<span class="legend-item ${hidden ? 'legend-hidden' : ''}" data-state="${name}">
-      <span class="legend-swatch" style="background:${STATE_COLORS[name]}"></span>
-      ${STATE_LABELS[name]}
-    </span>`;
-  }).join('');
-}
+## Štatistiky (pravý panel / collapsible na mobile)
+
+| Stat | ID | Formát |
+|------|----|--------|
+| Celková populácia | statTotalPop | X tis. / X.XX mil. |
+| Muži | statMalePop | X tis. |
+| Ženy | statFemalePop | X tis. |
+| Priemerný vek | statMedianAge | X.X rokov |
+| Platitelia | statPayers + statPayersDetail | X tis. (X.X % populácie) |
+| Prijímatelia | statRecipients + statRecipientsDetail | X tis. (X.X % populácie) |
+| Deti (0–19) | statChildren | X tis. |
+| Produktívny vek (20–64) | statWorking | X tis. |
+| Seniori (65+) | statSeniors | X tis. |
+
+Stat karty: CSS grid (3 stĺpce: label 1fr | value auto | detail auto), `min-height: 28px`.
+
+## Optimalizácie
+
+- **Web Worker:** simulácia + labor allocation off-thread
+- **Pre-computed profily:** fertilita a migrácia vypočítané 1× na simuláciu (nie 126×)
+- **Buffer reuse:** `allocateCohort` používa caller-provided Float64Array (0 alokácií v hot path)
+- **Cached konštanty:** AGE_LABELS, STACK_ORDER ako module-level
+- **DOM caching:** všetky stat elementy, slidre a value displeje cachované pri init
+- **Year slider:** žiadna simulácia — len index do pre-computed snapshots (<16ms)
+- **Param slidre:** debounce 100ms → worker recompute
+- **computeAllStates:** loop-copy namiesto 8 individuálnych priradení
+- **Dáta:** anchors.json obsahuje len rok 2024 (historické 1950/1980/2000 odstránené)
+
+## Kódová štruktúra
+
+| Súbor | Riadky | Popis |
+|-------|--------|-------|
+| style.css | ~796 | Kompletný styling + responsive (3 breakpointy) |
+| index.html | ~460 | HTML + inline JS modul |
+| plot.js | ~171 | Vizualizácia pyramídy + legenda |
+| model.js | ~234 | Simulačný engine + labor alokácia |
+| worker.js | ~47 | Worker wrapper |
+| **Spolu** | **~1708** | |
+
+## Odstránené funkcie
+- Anchor tlačidlá (1950/1980/2000) — iba rok 2024
+- M/F compare pohľad
+- Populácia pohľad (toggle Populácia/Trh práce)
+- Support ratio time-series graf
+- Vývoj populácie time-series graf
+- SVG logo (nahradené textovým nadpisom)
+- Rok v headeri (yearDisplayHeader) — zobrazený len v main content
+- header-controls div — odstránený (bol prázdny po odstránení roku)
+- data/initial_1950.json — nikdy referencovaný v kóde
+- Historické anchor dáta (1950, 1980, 2000) z anchors.json
+- Redundantný `sl` alias pre `sliders` objekt

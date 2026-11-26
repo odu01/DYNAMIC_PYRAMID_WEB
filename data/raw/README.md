@@ -49,7 +49,7 @@ Oddeľovač čiarka alebo bodkočiarka, desatinná bodka alebo čiarka, prvý ri
 | Súbor | Stĺpce | Zdroj | Povinný |
 |---|---|---|---|
 | `sp_poberatelia.csv` | `age,sex,old_age,early,disability` – počty **osôb** poberajúcich starobný, predčasný a invalidný dôchodok (sólo aj v súbehe s pozostalostným), k 31. 12. predchádzajúceho alebo k 1. 1. základného roka | Sociálna poisťovňa – štatistiky dôchodkov podľa veku | áno |
-| `students.csv` | `age,sex,share` – podiel študentov dennej formy na obyvateľstve daného veku (0–1 alebo %) | ŠÚ SR / CVTI SR (počet študentov podľa veku ÷ obyvateľstvo) | nie |
+| `students.csv` | `age,sex,share` – podiel študentov dennej formy na **celom** obyvateľstve daného veku (0–1 alebo %); skript ho prepočíta na podiel medzi osobami, ktoré nie sú starobní ani invalidní dôchodcovia | ŠÚ SR / CVTI SR (počet študentov podľa veku ÷ obyvateľstvo) | nie |
 | `sick.csv` | `age,sex,share` – priemerný podiel zamestnaných na PN | Sociálna poisťovňa (priemerné percento PN podľa veku) | nie |
 | `parameters.csv` | `key,value,source` – jednotlivé parametre (pozri nižšie) | podľa parametra | nie |
 
@@ -63,9 +63,16 @@ Kľúče v `parameters.csv` (každý je voliteľný a prepíše predvolenú hodn
 | `unemployment_rate`, `part_time_rate` | agregátna miera nezamestnanosti a podiel čiastočných úväzkov (%), ak sa nemajú brať z VZPS | `5.3` |
 | `sex_ratio_male_share` | podiel chlapcov medzi živonarodenými | `0.514` |
 | `maternity_leave_weeks` | dĺžka materskej v týždňoch | `34` |
+| `parental_home_share` | podiel matiek detí od 34 týždňov do 3 rokov, ktoré sú doma a nepracujú (0–1 alebo %); predvolená hodnota posuvníka „Rodičovská: matky doma“ | `0.75` |
+| `parental_recipients_not_working` | počet **osôb** poberajúcich rodičovský príspevok, ktoré nepracujú; skript z neho dopočíta podiel matiek doma tak, aby model mal rovnaký počet osôb na rodičovskej (má prednosť pred `parental_home_share`) | `95000` |
+
+Rodičovský príspevok: zdroj je ÚPSVaR (štatistiky rodičovského príspevku). Ak sa počet poberateľov, ktorí nepracujú,
+nepublikuje, treba ho vyžiadať alebo odhadnúť; celkový počet poberateľov zahŕňa aj pracujúcich a otcov. Model
+predpokladá, že rodičovská je vo VZPS neaktivita (overiť s ŠÚ SR). Bez týchto údajov zostáva predbežných 80 % matiek doma.
 
 ## Kontrola
 
 `node tools/test_pipeline.mjs` overí spracovanie na syntetických súboroch v rovnakých formátoch (bez potreby
 skutočných dát). Po nahratí skutočných súborov vypíše `build_data` zdroj a rok každej zložky a `audit`
-porovná základný rok so štatistikami.
+porovná základný rok so štatistikami (napr. materskú s počtom poberateľov materského zo Sociálnej poisťovne,
+ktorý zahŕňa aj otcov, a rodičovskú s počtom poberateľov rodičovského príspevku z ÚPSVaR).

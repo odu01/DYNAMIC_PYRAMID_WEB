@@ -14,6 +14,7 @@ const COMPONENT_LABELS = {
   activity: 'Ekonomická aktivita',
   unemployment: 'Nezamestnanosť',
   partTime: 'Čiastočné úväzky',
+  parentalLeave: 'Rodičovská (podiel matiek doma)',
   targets: 'Cieľové e0 (základný scenár)',
   benchmark: 'Porovnanie EUROPOP2023'
 };
@@ -24,7 +25,8 @@ const ASSUMPTION_LABELS = {
   leeCarterExcludedYears: 'Roky vynechané z odhadu b_x',
   sensitivityTaper: 'Zoslabenie b_x pri chýbajúcej histórii',
   maternityLeaveWeeks: 'Dĺžka materskej (týždne)',
-  sexRatioMaleShare: 'Podiel chlapcov medzi živonarodenými'
+  sexRatioMaleShare: 'Podiel chlapcov medzi živonarodenými',
+  parentalLeaveLfsStatus: 'Zaradenie rodičovskej vo VZPS'
 };
 
 /**

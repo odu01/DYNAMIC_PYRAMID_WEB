@@ -4,12 +4,14 @@
 // State:  slider values are kept in slider units (see config.js); the URL hash stores every value that
 //         differs from the default, so a link reproduces the scenario exactly.
 
-import { END_YEAR, SECTIONS, SLIDERS, SCENARIOS, SERIES_METRICS, STATE_META } from './config.js';
+import { END_YEAR, SECTIONS, SLIDERS, SCENARIOS, SERIES_METRICS, STATE_META, LEGACY_STATE_ORDER } from './config.js';
 import { renderPyramid, renderTimeSeries, maxBinTotal, composeExportSvg } from './plot.js';
 import { formatNumber, formatPopulation, formatSigned, formatPercent } from './format.js';
-import { runSimulation, computeAgeIndicators, AGE_COUNT, STATE_COUNT } from './model.js';
+import { runSimulation, computeAgeIndicators, AGE_COUNT, STATE_COUNT, STATE_KEYS } from './model.js';
 
 const SIMULATION_DEBOUNCE_MS = 90;
+const CALIBRATION_SCHEMA_VERSION = 2;
+const RELOAD_MESSAGE = 'Stránka bola aktualizovaná – obnovte ju (Ctrl+F5).';
 const PLAY_INTERVAL_MS = 150;
 const STATUS_LABELS = {
   provisional: 'Predbežná kalibrácia',
@@ -24,6 +26,7 @@ const app = {
   benchmarkSeries: null,
   benchmarkMax: 0,
   startYear: 2024,
+  sliders: SLIDERS,
   defaults: {},
   values: {},
   year: 2024,
@@ -33,6 +36,7 @@ const app = {
   result: null,
   xMax: 0,
   referenceRatio: NaN,
+  references: {},
   requestCounter: 0,
   renderedRequestId: 0,
   pendingTimer: null,
@@ -125,7 +129,7 @@ function snapToSlider(value, slider) {
  * Example: sliderByKey('tfrTarget').min
  */
 function sliderByKey(key) {
-  return SLIDERS.find(slider => slider.key === key);
+  return app.sliders.find(slider => slider.key === key);
 }
 
 /**
@@ -136,9 +140,19 @@ function sliderByKey(key) {
  */
 function computeDefaults(calibration) {
   const defaults = {};
-  for (const slider of SLIDERS) {
+  const missing = [];
+  for (const slider of app.sliders) {
     const modelValue = calibration.defaults[slider.key];
-    defaults[slider.key] = snapToSlider(Number.isFinite(modelValue) ? modelValue / slider.scale : slider.min, slider);
+    if (!Number.isFinite(modelValue)) {
+      missing.push(slider.key);
+      continue;
+    }
+    defaults[slider.key] = snapToSlider(modelValue / slider.scale, slider);
+  }
+  if (missing.length) {
+    const error = new Error(`Kalibrácia neobsahuje predvolené hodnoty: ${missing.join(', ')}`);
+    error.userMessage = RELOAD_MESSAGE;
+    throw error;
   }
   return defaults;
 }
@@ -151,7 +165,7 @@ function computeDefaults(calibration) {
  */
 function scenarioFromValues(values = app.values) {
   const scenario = {};
-  for (const slider of SLIDERS) scenario[slider.key] = values[slider.key] * slider.scale;
+  for (const slider of app.sliders) scenario[slider.key] = values[slider.key] * slider.scale;
   return scenario;
 }
 
@@ -181,7 +195,7 @@ function presetValues(scenarioId) {
 function matchingScenarioId(values) {
   for (const scenario of SCENARIOS) {
     const preset = presetValues(scenario.id);
-    if (SLIDERS.every(slider => Math.abs(preset[slider.key] - values[slider.key]) < 1e-9)) return scenario.id;
+    if (app.sliders.every(slider => Math.abs(preset[slider.key] - values[slider.key]) < 1e-9)) return scenario.id;
   }
   return 'custom';
 }
@@ -235,7 +249,7 @@ function buildControls() {
     heading.append(toggle);
     sectionElement.append(heading, body);
 
-    for (const slider of SLIDERS.filter(item => item.section === section.id)) {
+    for (const slider of app.sliders.filter(item => item.section === section.id)) {
       const control = document.createElement('div');
       control.className = 'control';
       const labelRow = document.createElement('div');
@@ -268,6 +282,14 @@ function buildControls() {
       tooltip.setAttribute('role', 'tooltip');
       tooltip.textContent = slider.tooltip(app.calibration);
       control.append(labelRow, input, tooltip);
+      if (slider.key === 'womenActivityLevel') {
+        const note = document.createElement('p');
+        note.className = 'control-note';
+        note.id = 'womenActivityNote';
+        note.setAttribute('aria-live', 'polite');
+        note.hidden = true;
+        control.append(note);
+      }
       body.append(control);
       attachTooltip(infoButton, tooltip);
       input.addEventListener('input', () => {
@@ -285,7 +307,9 @@ function buildControls() {
   const metricSelect = elementById('metricSelect');
   metricSelect.replaceChildren(...SERIES_METRICS.map(metric => new Option(metric.label, metric.id)));
   metricSelect.value = app.metricId;
-  attachTooltip(elementById('ratioInfoButton'), elementById('ratioTooltip'));
+  for (const name of ['ratio', 'dependency', 'economicOld', 'economic']) {
+    attachTooltip(elementById(`${name}InfoButton`), elementById(`${name}Tooltip`));
+  }
 }
 
 /**
@@ -499,8 +523,39 @@ function renderYearView() {
   elementById('yearSlider').value = String(app.year);
   elementById('yearSlider').setAttribute('aria-valuetext', `Rok ${app.year}`);
   updateLegend();
+  renderPyramidCaption(series, index);
   renderKpis(series, index);
   renderStatistics(series, index);
+  updateWomenActivityNote();
+}
+
+/**
+ * Population of the selected year above the pyramid (with the change against the base year).
+ * Inputs:  series (object of number[]), index (integer, position of the year)
+ * Output:  none (DOM)
+ * Example: renderPyramidCaption(app.result.series, 26)
+ */
+function renderPyramidCaption(series, index) {
+  const total = series.total[index];
+  const change = 100 * (total / series.total[0] - 1);
+  elementById('pyramidCaption').textContent = `Obyvateľstvo k 1. 1. ${app.year}: ${formatPopulation(total)}`
+    + (index === 0 ? '' : ` (${formatSigned(change, 1)} % oproti ${app.startYear})`);
+}
+
+/**
+ * Note under the women-activity slider when the actual base-year rate differs from the slider level
+ * (the level holds at the default values of the other sliders; e.g. fewer mothers at home raise it).
+ * Inputs:  none (uses app.result and app.values)
+ * Output:  none (DOM)
+ * Example: updateWomenActivityNote()
+ */
+function updateWomenActivityNote() {
+  const note = elementById('womenActivityNote');
+  if (!note || !app.result) return;
+  const actual = app.result.series.womenActivity25to45[0];
+  const differs = Number.isFinite(actual) && Math.abs(actual - app.values.womenActivityLevel) >= 0.05;
+  note.hidden = !differs;
+  note.textContent = differs ? `Pri aktuálnych predpokladoch v r. ${app.startYear}: ${formatPercent(actual, 1)}` : '';
 }
 
 /**
@@ -549,8 +604,9 @@ function updateLegend() {
 }
 
 /**
- * Key indicators for the selected year: recipients per 100 payers (vs. base year), old-age dependency,
- * population (vs. base year).
+ * Key indicators for the selected year with the base-year value of the default scenario: recipients per 100
+ * payers (coloured against the base year), demographic old-age dependency (65+/20-64), economic old-age
+ * dependency (old-age pensioners per 100 payers) and economic dependency (non-payers per 100 payers).
  * Inputs:  series (object of number[]), index (integer, position of the year)
  * Output:  none (DOM)
  * Example: renderKpis(app.result.series, 26)
@@ -568,11 +624,14 @@ function renderKpis(series, index) {
   }
   pill.className = `kpi-pill tone-${tone}`;
   pill.textContent = text;
-  elementById('kpiRatioReference').textContent = `${app.startYear}, predvolené: ${formatNumber(app.referenceRatio, 0)}`;
+  const references = app.references;
+  elementById('kpiRatioReference').textContent = `Rok ${app.startYear}: ${formatNumber(references.recipientsPer100Payers, 0)}`;
   elementById('kpiDependencyValue').textContent = formatNumber(series.oldAgeDependency[index], 1);
-  elementById('kpiPopulationValue').textContent = formatPopulation(series.total[index]);
-  const populationChange = 100 * (series.total[index] / series.total[0] - 1);
-  elementById('kpiPopulationChange').textContent = index === 0 ? `k 1. 1. ${app.startYear}` : `${formatSigned(populationChange, 1)} % oproti ${app.startYear}`;
+  elementById('kpiDependencyReference').textContent = `65+ na 100 osôb 20–64 · ${app.startYear}: ${formatNumber(references.oldAgeDependency, 1)}`;
+  elementById('kpiEconomicOldValue').textContent = formatNumber(series.economicOldAgeDependency[index], 0);
+  elementById('kpiEconomicOldReference').textContent = `dôchodcovia na 100 platiteľov · ${app.startYear}: ${formatNumber(references.economicOldAgeDependency, 0)}`;
+  elementById('kpiEconomicValue').textContent = formatNumber(series.economicDependency[index], 0);
+  elementById('kpiEconomicReference').textContent = `neplatitelia na 100 platiteľov · ${app.startYear}: ${formatNumber(references.economicDependency, 0)}`;
 }
 
 /**
@@ -596,6 +655,8 @@ function renderStatistics(series, index) {
   set('statMedianAge', formatNumber(series.medianAge[index], 1) + ' r.');
   set('statPayers', `${formatPopulation(series.payers[index])} · ${formatPercent(100 * series.payers[index] / total)}`);
   set('statRecipients', `${formatPopulation(series.recipients[index])} · ${formatPercent(100 * series.recipients[index] / total)}`);
+  set('statMaternity', formatPopulation(series.maternity[index]));
+  set('statParental', formatPopulation(series.parental[index]));
   set('statWomenActivity', formatPercent(series.womenActivity25to45[index]));
   set('statBirths', formatNumber(series.births[index], 1) + ' tis.');
   set('statDeaths', formatNumber(series.deaths[index], 1) + ' tis.');
@@ -624,6 +685,7 @@ function renderSeriesView() {
     series: result.series,
     benchmarkSeries: app.showBenchmark ? app.benchmarkSeries : null,
     currentYear: app.year,
+    referenceValue: metric.referenceSliderKey ? app.values[metric.referenceSliderKey] : null,
     width: size.width,
     height: size.height
   });
@@ -639,13 +701,13 @@ function renderSeriesView() {
  */
 function buildHash() {
   const parameters = new URLSearchParams();
-  for (const slider of SLIDERS) {
+  for (const slider of app.sliders) {
     if (Math.abs(app.values[slider.key] - app.defaults[slider.key]) > 1e-9) parameters.set(slider.hashKey, String(app.values[slider.key]));
   }
   if (app.year !== app.startYear) parameters.set('y', String(app.year));
   if (app.metricId !== SERIES_METRICS[0].id) parameters.set('m', app.metricId);
   if (app.showBenchmark) parameters.set('b', '1');
-  if (app.hiddenStates.size) parameters.set('h', STATE_META.map((meta, index) => app.hiddenStates.has(meta.key) ? index : -1).filter(index => index >= 0).join('.'));
+  if (app.hiddenStates.size) parameters.set('h', STATE_META.filter(meta => app.hiddenStates.has(meta.key)).map(meta => meta.code).join('.'));
   return parameters.toString();
 }
 
@@ -671,7 +733,7 @@ function updateHash() {
 function applyHash() {
   const parameters = new URLSearchParams(location.hash.replace(/^#/, ''));
   const values = { ...app.defaults };
-  for (const slider of SLIDERS) {
+  for (const slider of app.sliders) {
     const raw = parameters.get(slider.hashKey);
     if (raw !== null && Number.isFinite(Number(raw))) values[slider.key] = snapToSlider(Number(raw), slider);
   }
@@ -683,12 +745,18 @@ function applyHash() {
   elementById('metricSelect').value = app.metricId;
   app.showBenchmark = parameters.get('b') === '1' && Boolean(app.benchmark);
   elementById('benchmarkToggle').checked = app.showBenchmark;
-  const hiddenParameter = parameters.get('h') || '';
-  app.hiddenStates = new Set(hiddenParameter.split('.')
-    .filter(part => /^\d+$/.test(part))
-    .map(Number)
-    .filter(index => STATE_META[index])
-    .map(index => STATE_META[index].key));
+  // hidden states: short codes (h=inv.star); numeric tokens come from links made before the 10-state layout
+  const hidden = new Set();
+  for (const token of (parameters.get('h') || '').split('.').map(part => part.trim().toLowerCase()).filter(Boolean)) {
+    if (/^\d+$/.test(token)) {
+      (LEGACY_STATE_ORDER[Number(token)] || []).forEach(key => hidden.add(key));
+    } else {
+      const meta = STATE_META.find(item => item.code === token || item.key.toLowerCase() === token);
+      if (meta) hidden.add(meta.key);
+    }
+  }
+  app.hiddenStates = hidden;
+  if (parameters.has('wa')) showToast('Odkaz pochádza zo staršej verzie: posun aktivity žien (wa) sa už nepoužíva, použila sa predvolená úroveň.');
 }
 
 // ─── Export ─────────────────────────────────────────────────────────────────
@@ -785,11 +853,12 @@ function toCsv(header, rows) {
  */
 function exportSeriesCsv() {
   const { years, series } = app.result;
-  const stateColumns = ['zam_plny_tis', 'zam_ciastocny_tis', 'deti_studenti_tis', 'neaktivni_tis', 'nezamestnani_tis', 'pn_materska_tis', 'invalidni_tis', 'starobni_dochodcovia_tis'];
+  const stateColumns = STATE_META.map(meta => meta.csvKey);
   const columns = [
     ['rok', null], ['obyvatelstvo_tis', 'total'], ['muzi_tis', 'male'], ['zeny_tis', 'female'],
     ['vek_0_19_tis', 'children'], ['vek_20_64_tis', 'working'], ['vek_65plus_tis', 'seniors'],
-    ['starobna_zavislost', 'oldAgeDependency'], ['priemerny_vek', 'meanAge'], ['median_veku', 'medianAge'],
+    ['starobna_zavislost', 'oldAgeDependency'], ['ekonomicka_zavislost_starsich', 'economicOldAgeDependency'],
+    ['celkova_ekonomicka_zavislost', 'economicDependency'], ['priemerny_vek', 'meanAge'], ['median_veku', 'medianAge'],
     ['zivonarodeni_tis', 'births'], ['zomreti_tis', 'deaths'], ['cista_migracia_tis', 'netMigration'],
     ['tfr', 'tfr'], ['e0_muzi', 'e0Male'], ['e0_zeny', 'e0Female'], ['e65_muzi', 'e65Male'], ['e65_zeny', 'e65Female'],
     ['dochodkovy_vek_muzi', 'retireAgeMale'], ['dochodkovy_vek_zeny', 'retireAgeFemale'],
@@ -797,7 +866,7 @@ function exportSeriesCsv() {
     ['aktivita_zien_25_45', 'womenActivity25to45']
   ];
   const scenario = scenarioFromValues();
-  const parameterColumns = SLIDERS.map(slider => [`param_${slider.hashKey}`, scenario[slider.key]]);
+  const parameterColumns = app.sliders.map(slider => [`param_${slider.hashKey}`, scenario[slider.key]]);
   const header = [...columns.map(([name]) => name), ...stateColumns, ...parameterColumns.map(([name]) => name)];
   const rows = years.map((year, index) => [
     year,
@@ -817,7 +886,7 @@ function exportSeriesCsv() {
 function exportPyramidCsv() {
   const snapshot = app.result.snapshots[app.year];
   const states = app.result.states[app.year];
-  const header = ['rok', 'vek', 'pohlavie', 'populacia_tis', 'zam_plny_tis', 'zam_ciastocny_tis', 'deti_studenti_tis', 'neaktivni_tis', 'nezamestnani_tis', 'pn_materska_tis', 'invalidni_tis', 'starobni_dochodcovia_tis'];
+  const header = ['rok', 'vek', 'pohlavie', 'populacia_tis', ...STATE_META.map(meta => meta.csvKey)];
   const rows = [];
   for (let age = 0; age < AGE_COUNT; age++) {
     for (let sex = 0; sex < 2; sex++) {
@@ -1012,6 +1081,12 @@ async function init() {
   try {
     if (!window.Plot || !window.d3) throw new Error('Nepodarilo sa načítať knižnice grafov (vendor/).');
     const [calibration, anchors] = await Promise.all([loadJson('data/calibration.json'), loadJson('data/anchors.json')]);
+    if (calibration.meta.schemaVersion !== CALIBRATION_SCHEMA_VERSION || STATE_META.map(meta => meta.key).join() !== STATE_KEYS.join()) {
+      const error = new Error(`Nesúlad verzií (kalibrácia ${calibration.meta.schemaVersion}, stránka ${CALIBRATION_SCHEMA_VERSION})`);
+      error.userMessage = RELOAD_MESSAGE;
+      throw error;
+    }
+    app.sliders = SLIDERS.map(slider => (slider.maxFromCalibration ? { ...slider, max: slider.maxFromCalibration(calibration) } : slider));
     const benchmarkComponent = calibration.meta.components && calibration.meta.components.benchmark;
     const benchmark = benchmarkComponent && benchmarkComponent.status === 'official' ? await loadJson('data/benchmark.json', true) : null;
     app.calibration = calibration;
@@ -1026,8 +1101,14 @@ async function init() {
     app.defaults = computeDefaults(calibration);
     app.values = { ...app.defaults };
     app.year = app.startYear;
-    const reference = runSimulation(app.startPopulation, scenarioFromValues(app.defaults), calibration, app.startYear, app.startYear);
-    app.referenceRatio = reference.series.recipientsPer100Payers[0];
+    const reference = runSimulation(app.startPopulation, scenarioFromValues(app.defaults), calibration, app.startYear, app.startYear).series;
+    app.references = {
+      recipientsPer100Payers: reference.recipientsPer100Payers[0],
+      oldAgeDependency: reference.oldAgeDependency[0],
+      economicOldAgeDependency: reference.economicOldAgeDependency[0],
+      economicDependency: reference.economicDependency[0]
+    };
+    app.referenceRatio = app.references.recipientsPer100Payers;
 
     buildControls();
     buildLegend();
@@ -1042,7 +1123,7 @@ async function init() {
     scheduleSimulation(0);
   } catch (error) {
     console.error(error);
-    showError(`Chyba pri načítaní: ${error.message}. Stránku otvorte cez webový server (napr. GitHub Pages), nie ako súbor.`);
+    showError(error.userMessage || `Chyba pri načítaní: ${error.message}. Stránku otvorte cez webový server (napr. GitHub Pages), nie ako súbor.`);
   }
 }
 

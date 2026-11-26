@@ -12,10 +12,14 @@ do roku 2100. Statická webová stránka bez build kroku, určená na GitHub Pag
 
 - Kohortno-komponentná projekcia (vek 0–99 a 100+, muži a ženy, ročný krok) so zlepšovaním úmrtnosti
   podľa Lee-Cartera, trajektóriami plodnosti a migrácie a voliteľným naviazaním dôchodkového veku na e65.
-- Rozdelenie každej kohorty do 8 stavov na trhu práce, ukazovatele *poberatelia na 100 platiteľov* a
-  *starobná závislosť (65+/20–64)*.
-- 13 posuvníkov a 7 scenárov, zdieľateľný odkaz (stav v URL), prehrávanie rokov, export PNG/SVG/CSV,
-  porovnanie s projekciou Eurostatu EUROPOP2023 (po nahratí dát).
+- Rozdelenie každej kohorty do 10 stavov na trhu práce vrátane PN, materskej a rodičovskej (matky malých
+  detí sú ukotvené na počet detí vo veku 0–2 v pyramíde).
+- Ukazovatele: *poberatelia na 100 platiteľov*, *demografická závislosť starších* (65+ na 100 osôb 20–64),
+  *ekonomická závislosť starších* (starobní dôchodcovia na 100 platiteľov) a *celková ekonomická závislosť*
+  (všetci okrem platiteľov vrátane detí na 100 platiteľov). Platitelia = plné úväzky + polovica čiastočných.
+- 14 posuvníkov (aj úroveň aktivity žien 25–45 a podiel matiek doma na rodičovskej) a 8 scenárov, zdieľateľný
+  odkaz (stav v URL), prehrávanie rokov, export PNG/SVG/CSV, porovnanie s projekciou Eurostatu EUROPOP2023
+  (po nahratí dát).
 
 ## Spustenie lokálne
 
@@ -47,7 +51,7 @@ Potom otvoriť http://localhost:8000.
 
 ## Dáta a kalibrácia
 
-Oficiálne CSV (Eurostat, Sociálna poisťovňa) sa uložia do `data/raw/` podľa [`data/raw/README.md`](data/raw/README.md)
+Oficiálne CSV (Eurostat, Sociálna poisťovňa, prípadne parametre z ÚPSVaR) sa uložia do `data/raw/` podľa [`data/raw/README.md`](data/raw/README.md)
 a skript vygeneruje nové JSON súbory:
 
 ```bash

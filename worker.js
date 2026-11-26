@@ -5,7 +5,9 @@
 //   { type: 'simulate', requestId, startPopulation, scenario, startYear, endYear }
 //                                                                    -> { type: 'result', requestId, result }
 // On failure:                                                        -> { type: 'error', requestId, message }
-// `result` is the output of runSimulation() in model.js.
+// `result` is the output of runSimulation() in model.js: { years, snapshots, states, series, womenActivityFit },
+// where states[year] is a Float64Array of 202 cohorts x 10 labour states and womenActivityFit
+// = { target, achieved, minimum, maximum (in %), shift, attainable } describes the women activity level solve.
 
 import { runSimulation } from './model.js';
 

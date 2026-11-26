@@ -53,7 +53,7 @@
       <ul>
         <li>Horizont 2024–2100 (rovnaký ako projekcia Eurostatu EUROPOP2023); stav obyvateľstva vždy k 1. januáru.</li>
         <li>Vek 0–99 po jednotlivých rokoch a otvorený interval 100+, obe pohlavia; jednotky tisíce osôb.</li>
-        <li>Každá kohorta sa delí do 8 vzájomne sa vylučujúcich stavov na trhu práce (kapitola 3).</li>
+        <li>Každá kohorta sa delí do 10 vzájomne sa vylučujúcich stavov na trhu práce vrátane PN, materskej a rodičovskej (kapitola 3).</li>
         <li>Výpočet prebieha v prehliadači (Web Worker); stav posuvníkov sa ukladá do odkazu, takže scenár sa dá zdieľať a zopakovať.</li>
       </ul>
     </section>
@@ -90,44 +90,67 @@
 
     <section id="trh-prace">
       <h2>3. Trh práce</h2>
-      <p>Každá kohorta \(N\) (vek \(x\), pohlavie) sa postupne (podmienene) rozdelí do 8 stavov, takže ich súčet sa vždy rovná populácii kohorty. Pre \(x &lt; 15\) patria všetci do stavu „deti a študenti“. Pre \(x \ge 15\):</p>
-      $$R = N\,r(x'),\qquad D = \min\bigl(N - R,\; N\,\delta\,d(x')\bigr),\qquad S = (N - R - D)\,s(x - \Delta_s),$$
-      $$A = (N - R - D - S)\,a(x'),\qquad I = N - R - D - S - A,$$
-      $$U = A\,u(x)\,\lambda_U,\qquad Z = (A - U)\Bigl(p(x) + f_x(t)\,\tfrac{34}{52}\Bigr),\qquad W = A - U - Z,$$
-      $$\check{W} = W\,\pi(x)\,\lambda_P,\qquad \hat{W} = W - \check{W}.$$
+      <p>Každá kohorta \(N\) (vek \(x\), pohlavie) sa postupne (podmienene) rozdelí do 10 vzájomne sa vylučujúcich stavov, takže ich súčet sa vždy rovná populácii kohorty (overuje audit). Pre \(x &lt; 15\) patria všetci do stavu „deti a študenti“. Pre \(x \ge 15\) sa najprv oddelia dôchodcovia a študenti:</p>
+      $$R = N\,r(x'),\qquad D = \min\bigl(N - R,\; N\,\delta\,d(x')\bigr),\qquad S = (N - R - D)\,s(x - \Delta_s),\qquad Q = N - R - D - S.$$
+
+      <h3>3.1 Matky malých detí</h3>
+      <p>Počet matiek sa ukotví na deti vo veku 0–2 rokov v pyramíde. Deti vo veku \(c\) sa priradia matkám podľa vekového profilu plodnosti \(\varphi\) vo veku matky pri pôrode:</p>
+      $$C_c = P^{M}_c + P^{F}_c\ \ (c = 0, 1, 2),\qquad g_o(x) = \frac{\varphi(x - o)}{\sum_y F_y\,\varphi(y - o)},$$
+      $$\mu^{N}_x = \tau_M\,C_0\,g_{\tau_M/2}(x),\qquad \mu^{T}_x = (1 - \tau_M)\,C_0\,g_{(1+\tau_M)/2}(x) + C_1\,g_{1{,}5}(x) + C_2\,g_{2{,}5}(x),$$
+      <p>kde \(\tau_M = 34/52\) je dĺžka materskej v rokoch a \(o\) priemerný čas od pôrodu v danom okne. \(\mu^{N}_x\) je podiel žien vo veku \(x\), ktoré majú dieťa mladšie ako 34 týždňov, a \(\mu^{T}_x\) podiel žien s dieťaťom od 34 týždňov do 3 rokov. Platí \(\sum_x F_x\,\mu^{N}_x = \tau_M C_0\) a \(\sum_x F_x(\mu^{N}_x + \mu^{T}_x) = C_0 + C_1 + C_2\). Vyššia plodnosť sa preto do rodičovskej premietne s oneskorením 1–3 rokov. Pre ženy \(Y^{N} = N\mu^{N}_x\) a \(Y^{T} = N\mu^{T}_x\). Ak by spolu prevýšili 90 % z \(Q\), úmerne sa zmenšia; je to technická hranica, ktorá sa pri predvolených hodnotách neuplatní.</p>
+
+      <h3>3.2 Členenie na stavy</h3>
+      $$H = \theta\,Y^{T},\qquad K = (1 - \theta)\,Y^{T},\qquad \tilde{Q} = Q - Y^{T},\qquad \nu = Y^{N} / \tilde{Q},$$
+      $$A = \tilde{Q}\cdot\min\bigl(0{,}995,\ \max\bigl(0,\ a(x') + \Delta_w\,\mathbb{1}_{F,\,25 \le x \le 45}\bigr)\bigr),\qquad I^{\circ} = \tilde{Q} - A,$$
+      $$U^{\circ} = A\,\min\bigl(0{,}95,\ u(x)\,\lambda_U\bigr),\qquad E^{\circ} = A - U^{\circ},$$
+      $$\mathrm{NEAKT} = (1 - \nu)\,I^{\circ},\quad \mathrm{NEZAM} = (1 - \nu)\,U^{\circ},\quad \mathrm{MAT} = \nu\,E^{\circ},\quad \mathrm{ROD} = H + \nu\,(I^{\circ} + U^{\circ}),$$
+      $$\mathrm{PN} = (E^{\circ} - \mathrm{MAT} + K)\,\min\bigl(0{,}6,\ p(x)\bigr),\qquad W = E^{\circ} - \mathrm{MAT} + K - \mathrm{PN},\qquad \check{W} = W\,\min\bigl(1,\ \pi(x)\,\lambda_P\bigr),\qquad \hat{W} = W - \check{W}.$$
+      <p>Podiel \(\theta\) (posuvník „Rodičovská: matky doma“) matiek detí od 34 týždňov do 3 rokov je doma a nepracuje; ostatné matky pracujú. Matky novorodencov sú v každom stave rovnako časté: zamestnané idú na materskú, nezamestnané a neaktívne na rodičovskú. \(\lambda_U\) a \(\lambda_P\) sa v každom roku nájdu bisekciou tak, aby \(\mathrm{NEZAM} / (\hat{W} + \check{W} + \mathrm{PN} + \mathrm{MAT} + \mathrm{NEZAM})\) a \(\check{W} / (\hat{W} + \check{W})\) presne zodpovedali posuvníkom, aj keď sa uplatnia stropy 0,95 a 1.</p>
       <table>
         <thead><tr><th>Symbol</th><th>Stav / profil</th></tr></thead>
         <tbody>
           <tr><td>\(R,\ r(x)\)</td><td>starobný dôchodca (vrátane predčasného dôchodku) – podiel na populácii</td></tr>
           <tr><td>\(D,\ d(x),\ \delta\)</td><td>invalidný dôchodca; \(\delta\) je posuvník „Invalidita (násobok)“</td></tr>
           <tr><td>\(S,\ s(x),\ \Delta_s\)</td><td>študent dennej formy; \(\Delta_s\) je posun dĺžky štúdia</td></tr>
-          <tr><td>\(A,\ a(x)\)</td><td>ekonomicky aktívni medzi osobami, ktoré nie sú dôchodcami ani študentmi; ženám 25–45 rokov sa pripočíta posuvník „Aktivita žien“</td></tr>
-          <tr><td>\(I\)</td><td>neaktívny (napr. rodičovská dovolenka, starostlivosť, iné)</td></tr>
-          <tr><td>\(U,\ u(x),\ \lambda_U\)</td><td>nezamestnaný; \(\lambda_U\) sa v každom roku nastaví tak, aby \(\sum U / \sum A\) zodpovedalo posuvníku</td></tr>
-          <tr><td>\(Z,\ p(x)\)</td><td>PN alebo materská: podiel zamestnaných na PN + materská (plodnosť × 34 týždňov)</td></tr>
-          <tr><td>\(\check{W},\ \pi(x),\ \lambda_P\)</td><td>čiastočný úväzok; \(\lambda_P\) zabezpečí agregátny podiel podľa posuvníka</td></tr>
+          <tr><td>\(Y^{N},\ Y^{T},\ \theta\)</td><td>matky detí do 34 týždňov a od 34 týždňov do 3 rokov; \(\theta\) podiel matiek doma</td></tr>
+          <tr><td>\(A,\ a(x),\ \Delta_w\)</td><td>aktívni medzi osobami mimo dôchodcov, študentov a matiek detí do 3 rokov; \(\Delta_w\) posun pre ženy 25–45 (kapitola 3.4)</td></tr>
+          <tr><td>\(\mathrm{NEAKT}\)</td><td>neaktívny (ostatní, napr. starostlivosť o príbuzných)</td></tr>
+          <tr><td>\(\mathrm{NEZAM},\ u(x),\ \lambda_U\)</td><td>nezamestnaný</td></tr>
+          <tr><td>\(\mathrm{PN},\ p(x)\)</td><td>zamestnaný na PN (podiel zamestnaných)</td></tr>
+          <tr><td>\(\mathrm{MAT}\)</td><td>materská – zamestnaná matka dieťaťa do 34 týždňov</td></tr>
+          <tr><td>\(\mathrm{ROD}\)</td><td>rodičovská – matka dieťaťa do 3 rokov doma, ktorá nepracuje ani na čiastočný úväzok</td></tr>
+          <tr><td>\(\check{W},\ \pi(x),\ \lambda_P\)</td><td>čiastočný úväzok</td></tr>
           <tr><td>\(\hat{W}\)</td><td>zamestnaný na plný úväzok</td></tr>
         </tbody>
       </table>
 
-      <h3>3.1 Zmena dôchodkového veku</h3>
+      <h3>3.3 Zmena dôchodkového veku</h3>
       <p>Vekové profily základného roka sa čítajú v „efektívnom veku“ \(x'\). Pri dôchodkovom veku \(R^{*}\) a referenčnom veku \(R_{t_0}\) (rozdiel \(\Delta = R^{*} - R_{t_0}\)) platí</p>
       $$x' = \begin{cases} x, & x \le 50,\\[2pt] 50 + (x - 50)\,\dfrac{R^{*} - w - \Delta - 50}{R^{*} - w - 50}, & 50 &lt; x &lt; R^{*} - w,\\[8pt] x - \Delta, & x \ge R^{*} - w, \end{cases}\qquad w = \min\Bigl(5, \frac{R^{*} - 50}{2}\Bigr).$$
       <p>Posledných \(w\) rokov pred dôchodkovým vekom (predčasné dôchodky, skok pri dôchodkovom veku) sa tak posúva bez skreslenia a profil medzi 50 rokmi a týmto pásmom sa plynulo natiahne. Pri naviazaní na strednú dĺžku života v 65 rokoch (priemer mužov a žien) sa dôchodkový vek v čase mení ako</p>
       $$R^{*}(t) = R^{*} + \gamma\,\bigl(\bar e_{65}(t) - \bar e_{65}(t_0)\bigr),\qquad \gamma \in [0, 1].$$
 
-      <h3>3.2 Prepočet miery aktivity z VZPS</h3>
-      <p>Výberové zisťovanie pracovných síl (VZPS, Eurostat <code>lfsa_argan</code>) udáva aktivitu \(a^{V}(x)\) celej populácie. Model potrebuje aktivitu osôb mimo dôchodcov a študentov:</p>
-      $$a(x) = \frac{a^{V}(x) - w_s\,s(x) - w_d\,d(x) - w_r(x)\,r(x)}{1 - s(x) - d(x) - r(x)},$$
-      <p>kde \(w_s = 0{,}10\) je predpokladaný podiel aktívnych študentov, \(w_d = 0{,}30\) podiel aktívnych invalidných dôchodcov a \(w_r(x) = a^{V}(x)\) nad referenčným dôchodkovým vekom (pracujúci dôchodcovia), inak 0 (poberateľ predčasného dôchodku nesmie byť zamestnaný). Profily z 5-ročných skupín VZPS sa na jednotlivé roky veku prevádzajú lineárnou interpoláciou medzi stredmi skupín.</p>
+      <h3>3.4 Aktivita žien 25–45 a jej úroveň</h3>
+      <p>Miera aktivity žien vo veku 25–45 rokov sa počíta v koncepte VZPS. Materská je dočasná neprítomnosť zamestnanej, rodičovská je neaktivita (predpoklad, ktorý treba overiť s ŠÚ SR):</p>
+      $$\alpha = \frac{\sum_{x=25}^{45}\bigl(\hat{W} + \check{W} + \mathrm{PN} + \mathrm{MAT} + \mathrm{NEZAM} + w_s\,S + w_d\,D\bigr)}{\sum_{x=25}^{45} N}\qquad\text{(ženy)},$$
+      <p>kde \(w_s = 0{,}10\) a \(w_d = 0{,}30\) sú predpokladané podiely ekonomicky aktívnych študentiek a invalidných dôchodkýň. Posuvník nastaví úroveň \(\alpha^{*}\): posun \(\Delta_w\) sa nájde bisekciou na \([-1, 1]\), raz na populácii základného roka s predvolenými hodnotami všetkých ostatných posuvníkov, a potom sa drží vo všetkých rokoch. V roku 2024 pri predvolených predpokladoch preto platí \(\alpha = \alpha^{*}\) presne. Plodnosť a ostatné posuvníky skutočnú mieru menia (pravý panel, poznámka pod posuvníkom). Maximum posuvníka je \(\alpha\) pri \(\Delta_w = 1\): pracujú alebo hľadajú prácu takmer všetky ženy okrem matiek doma.</p>
+
+      <h3>3.5 Prepočet miery aktivity z VZPS</h3>
+      <p>Výberové zisťovanie pracovných síl (VZPS, Eurostat <code>lfsa_argan</code>) udáva aktivitu \(a^{V}_g\) celej populácie v 5-ročných vekových skupinách \(g\). Model potrebuje aktivitu \(a(x)\) osôb mimo dôchodcov, študentov a matiek malých detí. Pod referenčným dôchodkovým vekom sa každá skupina presne invertuje s konštantnou mierou:</p>
+      $$a_g = \frac{\sum_{x \in g} N_x\bigl(a^{V}_g - (1 - \theta)\,\mu^{T}_x - w_s\,S_x/N_x - w_d\,d_x\bigr)}{\sum_{x \in g} N_x\bigl(q_x - \mu^{T}_x - \mu^{N}_x\min(0{,}95,\ u_x\lambda_U)\bigr)},\qquad q_x = (1 - r_x - d_x)(1 - s_x).$$
+      <p>Od referenčného dôchodkového veku sa použije \(a_g = \sum N_x(a^{V}_g(1 - r_x) - w_s S_x/N_x - w_d d_x)/\sum N_x q_x\); pracujúci dôchodcovia sa nemodelujú. Hodnoty \(a_g\) sa interpolujú medzi stredmi skupín (podmienená aktivita je hladká, na rozdiel od celkovej, ktorá má pokles pre rodičovskú). Potom sa v každej skupine posunú tak, aby model presne reprodukoval priemery VZPS pod dôchodkovým vekom (3 priechody). Podiel študentov zo súboru <code>students.csv</code> (podiel na celej populácii) sa prepočíta na podiel medzi osobami mimo dôchodcov \(s_x = s^{\mathrm{pop}}_x/(1 - r_x - d_x)\).</p>
     </section>
 
     <section id="ukazovatele">
       <h2>4. Ukazovatele</h2>
       <ul>
-        <li><strong>Platitelia</strong> \(= \sum \hat{W} + 0{,}5\sum \check{W}\); <strong>poberatelia</strong> \(= \sum (U + Z + D + R)\).</li>
-        <li><strong>Poberatelia na 100 platiteľov</strong> \(= 100 \cdot \text{poberatelia} / \text{platitelia}\). Farba porovnáva s hodnotou roka 2024 pri predvolených predpokladoch: zelená = nižšia, oranžová = vyššia najviac o 20 %, červená = vyššia o viac ako 20 %.</li>
-        <li><strong>Starobná závislosť</strong> \(= 100 \cdot P_{65+} / P_{20\text{–}64}\) (konvencia správy Ageing Report Európskej komisie; Eurostat ako hlavný ukazovateľ používa menovateľ 15–64).</li>
+        <li><strong>Platitelia</strong> daní a odvodov \(= \sum \hat{W} + 0{,}5\sum \check{W}\) – prepočet, nie počet osôb; bez osôb na PN a materskej. Pracujúci dôchodcovia a študenti sa v modeli medzi platiteľov nerátajú.</li>
+        <li><strong>Poberatelia</strong> \(= \sum(\mathrm{NEZAM} + \mathrm{PN} + \mathrm{MAT} + \mathrm{ROD} + D + R)\). <strong>Poberatelia na 100 platiteľov</strong> \(= 100 \cdot \text{poberatelia} / \text{platitelia}\). Farba porovnáva s hodnotou roka 2024 pri predvolených predpokladoch: zelená = nižšia, oranžová = vyššia najviac o 20 %, červená = vyššia o viac ako 20 %.</li>
+        <li><strong>Demografická závislosť starších</strong> \(= 100 \cdot P_{65+} / P_{20\text{–}64}\) (konvencia správy Ageing Report Európskej komisie; Eurostat ako hlavný ukazovateľ používa menovateľ 15–64). Závisí len od vekovej štruktúry.</li>
+        <li><strong>Ekonomická závislosť starších</strong> \(= 100 \cdot R / \text{platitelia}\): poberatelia starobného a predčasného dôchodku na 100 platiteľov. Nejde o ukazovateľ EK „economic old-age dependency ratio“, ktorý delí neaktívnych 65+ zamestnanými 20–64.</li>
+        <li><strong>Celková ekonomická závislosť</strong> \(= 100 \cdot (N - \text{platitelia}) / \text{platitelia}\): všetci obyvatelia okrem platiteľov na 100 platiteľov. Neplatitelia + platitelia = obyvateľstvo, takže
+          $$\frac{100\,(N - \text{platitelia})}{\text{platitelia}} = \frac{100\,\text{poberatelia}}{\text{platitelia}} + \frac{100\,\bigl(S + \mathrm{NEAKT} + 0{,}5\,\check{W}\bigr)}{\text{platitelia}},$$
+          kde \(S\) zahŕňa aj deti do 15 rokov. Za osoby na materskej a rodičovskej platí poistné štát; v ukazovateli sú neplatitelia, lebo neplatia z vlastného príjmu. Vyššia plodnosť index najprv zvýši (viac detí a matiek doma) a zníži ho, až keď deti vstúpia na trh práce.</li>
         <li><strong>Priemerný vek</strong> \(= \sum_x (x + 0{,}5)\,P_x / \sum_x P_x\) (pre 100+ sa použije 101,5); <strong>medián</strong> sa interpoluje v rámci roku veku.</li>
         <li><strong>Pohyb v roku</strong> (živonarodení, zomretí, migrácia) sa vzťahuje na udalosti počas zvoleného roka, teda medzi 1. 1. zvoleného a nasledujúceho roka.</li>
       </ul>
@@ -141,7 +164,7 @@
         <tbody></tbody>
       </table>
       <h3>Ako doplniť oficiálne dáta</h3>
-      <p>Súbory CSV (exporty z Eurostatu vo formáte SDMX-CSV a niekoľko jednoduchých tabuliek zo Sociálnej poisťovne) sa uložia do priečinka
+      <p>Súbory CSV (exporty z Eurostatu vo formáte SDMX-CSV a niekoľko jednoduchých tabuliek zo Sociálnej poisťovne, prípadne počet poberateľov rodičovského príspevku z ÚPSVaR) sa uložia do priečinka
         <code>data/raw/</code> a spustí sa <code>node tools/build_data.mjs</code>. Skript nahradí predbežné profily, zapíše zdroj a rok každej
         zložky a stránka zobrazí nový stav. Zoznam a presné filtre súborov sú v <a href="https://github.com/odu01/DYNAMIC_PYRAMID_WEB/blob/main/data/raw/README.md">data/raw/README.md</a>.</p>
       <h3>Predpoklady spracovania dát</h3>
@@ -154,12 +177,15 @@
         <li><strong>Deterministická projekcia.</strong> Žiadne intervaly neistoty; výsledky po roku 2070 sú veľmi citlivé na predpoklady o plodnosti a migrácii.</li>
         <li><strong>Predbežná kalibrácia.</strong> Kým nie sú nahraté oficiálne dáta, vstupy sú parametrické odhady. Audit ukazuje odchýlky od skutočnosti v základnom roku (napr. počet zomretých asi o 10 %, populácia o 1,5 %), preto úrovne slúžia len na ilustráciu.</li>
         <li><strong>Statický trh práce.</strong> Vekové profily aktivity, nezamestnanosti, invalidity a štúdia zostávajú na úrovni základného roka; model nezachytáva kohortové efekty (napr. rastúcu vzdelanosť či zamestnanosť žien v starších ročníkoch) ani väzbu na mzdy a hospodársky cyklus.</li>
-        <li><strong>Prekrývanie stavov.</strong> Každá osoba patrí do jediného stavu. Pracujúci dôchodcovia sú len medzi dôchodcami, pracujúci študenti a invalidní dôchodcovia nie sú medzi zamestnanými.</li>
+        <li><strong>Prekrývanie stavov.</strong> Každá osoba patrí do jediného stavu. Pracujúci dôchodcovia sú len medzi dôchodcami, pracujúci študenti a invalidní dôchodcovia nie sú medzi zamestnanými; matky, ktoré popri rodičovskom príspevku pracujú, sú medzi zamestnanými.</li>
         <li><strong>Zjednodušené kategórie.</strong> „Platitelia“ a „poberatelia“ nie sú fiškálne toky: model neráta výšku odvodov ani dávok a nie každý nezamestnaný poberá dávku.</li>
         <li><strong>Dôchodkový vek.</strong> Jedna hodnota pre pohlavie a rok, nie podľa ročníka narodenia a počtu vychovaných detí; naviazanie na e65 je štylizované a zmena platí pre celé obdobie, nie po ročníkoch.</li>
         <li><strong>Úmrtnosť.</strong> Lee-Carter s lineárnym indexom a nemenným vekovým profilom zlepšovania (bez „rotácie“ k vyššiemu veku).</li>
         <li><strong>Plodnosť a migrácia.</strong> Nemenný tvar vekového profilu plodnosti (bez posunu k vyššiemu veku matiek); migranti majú rovnakú plodnosť a úmrtnosť ako ostatné obyvateľstvo a nemenný vekový profil.</li>
-        <li><strong>Materská.</strong> Podiel na materskej = plodnosť × 34/52 roka a uplatňuje sa len na zamestnané ženy, čo predpokladá rovnakú plodnosť zamestnaných a nezamestnaných žien.</li>
+        <li><strong>Materská a rodičovská.</strong> Modelujú sa len matky, nie otcovia. Materská začína pôrodom (v skutočnosti 6–8 týždňov pred ním); nemodeluje sa 37 a 43 týždňov ani rodičovská do 6 rokov pri dlhodobo chorom dieťati. Súrodenci a dvojčatá do 3 rokov sa rátajú na dieťa, takže \(\theta\) je podiel na dieťa; pri kalibrácii z počtu poberateľov ÚPSVaR to sedí. \(\theta\) sa berie doslovne: matky mimo domova pracujú (pri \(\theta = 0\) je aktivita žien ≈ 92 %). Matky novorodencov sú vo všetkých stavoch rovnako časté, študentky s deťmi zostávajú študentkami.</li>
+        <li><strong>Predbežné dáta o deťoch.</strong> Vek 0–4 je v predbežných dátach rozdelený rovnomerne, takže počet detí vo veku 0–2 v roku 2024 nezodpovedá skutočným ročníkom narodených. Pokles rodičovskej v rokoch 2024–2028 (asi o 15 tis.) a rast aktivity žien (asi o 0,8 p. b.) preto čiastočne odráža toto zjednodušenie, nielen pokles pôrodnosti. Jednotlivé roky veku z <code>demo_pjan</code> to spresnia.</li>
+        <li><strong>Aktivita žien.</strong> Úroveň posuvníka platí len pri predvolených ostatných predpokladoch v roku 2024. Zaradenie rodičovskej medzi neaktívnych vo VZPS je predpoklad.</li>
+        <li><strong>Ekonomické indexy.</strong> Menovateľ sú prepočítaní platitelia (čiastočný úväzok = 0,5, bez pracujúcich dôchodcov a študentov), nie skutočné príjmy a odvody. Ekonomická závislosť starších sa preto nedá porovnať s ukazovateľmi EK.</li>
         <li><strong>Bez regionálneho členenia.</strong> Model počíta len za Slovensko ako celok.</li>
       </ul>
     </section>
@@ -167,15 +193,48 @@
     <section id="overenie">
       <h2>7. Overenie</h2>
       <ul>
-        <li><code>node tools/audit.mjs</code> overuje invarianty a porovná základný rok so štatistikami. Invarianty: súčet stavov = populácia kohorty, demografická bilancia, dosiahnutie cieľového e0, agregátna nezamestnanosť a podiel čiastočných úväzkov a smer účinkov posuvníkov.</li>
-        <li><code>node tools/test_pipeline.mjs</code> spracuje syntetické CSV v rovnakých formátoch ako skutočné exporty a overí, že výstup zodpovedá vstupom. Zahŕňa aj odhad \(b_x\), extrapoláciu úmrtnosti 85+ a výber variantu projekcie.</li>
-        <li><code>node tools/e2e.mjs</code> otestuje stránku v prehliadači na počítači aj mobile (ovládanie, odkaz so scenárom, exporty, konzola bez chýb).</li>
+        <li><code>node tools/audit.mjs</code> overuje invarianty a porovná základný rok so štatistikami. Kontroluje:
+          <ul>
+            <li>súčet 10 stavov = populácia kohorty, materská a rodičovská len u žien a matky = deti vo veku 0–2;</li>
+            <li>demografickú bilanciu a dosiahnutie cieľového e0;</li>
+            <li>presnú nezamestnanosť a čiastočné úväzky aj pri extrémoch;</li>
+            <li>presné dosiahnutie úrovne aktivity žien, reprodukciu základných hodnôt a zložkové identity indexov;</li>
+            <li>konečné hodnoty pri každom posuvníku na minime aj maxime a smer účinkov posuvníkov.</li>
+          </ul></li>
+        <li><code>node tools/test_pipeline.mjs</code> spracuje syntetické CSV v rovnakých formátoch ako skutočné exporty a overí, že výstup zodpovedá vstupom. Zahŕňa:
+          <ul>
+            <li>odhad \(b_x\), extrapoláciu úmrtnosti 85+ a výber variantu projekcie;</li>
+            <li>reprodukciu skupín VZPS s rodičovskou;</li>
+            <li>prepočet študentov a dopočet \(\theta\) z počtu nepracujúcich poberateľov.</li>
+          </ul></li>
+        <li><code>node tools/e2e.mjs</code> otestuje stránku v prehliadači na počítači aj mobile. Kontroluje:
+          <ul>
+            <li>ovládanie, odkaz so scenárom aj staršie odkazy;</li>
+            <li>úroveň aktivity žien a posuvník rodičovskej;</li>
+            <li>exporty so všetkými stĺpcami;</li>
+            <li>konzolu bez chýb.</li>
+          </ul></li>
         <li>Knižnice sú uložené v repozitári (<code>vendor/</code>): d3 7.9.0, Observable Plot 0.6.17, KaTeX 0.18.11.</li>
       </ul>
     </section>
 
     <section id="zmeny">
       <h2>8. Zmeny po audite (11/2026)</h2>
+      <h3>Druhé kolo</h3>
+      <ul>
+        <li>Posuvník „Aktivita žien 25–45“ nastavuje úroveň (v koncepte VZPS) namiesto zmeny v p. b.</li>
+        <li>Materská je oddelená od PN a pribudla rodičovská (matky doma) s vlastným posuvníkom. Počty matiek sú ukotvené na deti vo veku 0–2. Rodičovská patrí medzi poberateľov, preto sa ukazovateľ poberatelia na 100 platiteľov v roku 2024 zvýšil zo 73 na približne 79.</li>
+        <li>Nové indexy: ekonomická závislosť starších a celková ekonomická závislosť; demografický index sa volá „demografická závislosť starších“.</li>
+        <li>Nezamestnanosť a čiastočné úväzky sa normalizujú bisekciou, takže presne zodpovedajú posuvníkom aj pri stropoch. Doteraz model napr. pri čiastočných úväzkoch 30 % dával 29,9 %.</li>
+        <li>Úpravy prevodu a kalibrácie:
+          <ul>
+            <li>prevod VZPS na úrovni vekových skupín s korekciou priemerov;</li>
+            <li>prepočet <code>students.csv</code> na osoby mimo dôchodcov;</li>
+            <li>predvolené hodnoty zaokrúhlené na kroky posuvníkov.</li>
+          </ul></li>
+        <li>Staršie odkazy fungujú ďalej: číselné skryté kategórie sa prevedú a parameter <code>wa</code> sa ohlási a ignoruje.</li>
+      </ul>
+      <h3>Prvé kolo</h3>
       <ul>
         <li>Opravené poprehadzované súbory repozitára; doplnené chýbajúce <code>worker.js</code> a <code>data/anchors.json</code>.</li>
         <li>PN a materská vracali NaN (výpočtu chýbala TFR) – opravené.</li>

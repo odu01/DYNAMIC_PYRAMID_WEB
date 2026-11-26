@@ -85,8 +85,44 @@ async function runE2e(outDir) {
     const badgeVisible = await page.isVisible('#calibrationBadge');
     expect('Odznak stavu kalibrácie je viditeľný', badgeVisible, await page.textContent('#calibrationBadge'));
     const sliderCount = await page.locator('.controls input[type="range"]').count();
-    expect('Posuvníky vytvorené z konfigurácie', sliderCount === 13, `${sliderCount} posuvníkov`);
+    expect('Posuvníky vytvorené z konfigurácie', sliderCount === 14, `${sliderCount} posuvníkov`);
+    expect('Legenda má 10 stavov', (await page.locator('.legend-item').count()) === 10);
+    const kpiTexts = await Promise.all(['#kpiRatioValue', '#kpiDependencyValue', '#kpiEconomicOldValue', '#kpiEconomicValue'].map(id => page.textContent(id)));
+    expect('4 KPI vrátane indexov ekonomickej závislosti', kpiTexts.every(text => text && text.trim() !== '—'), kpiTexts.join(' | '));
+    const calibration = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'data', 'calibration.json'), 'utf8'));
+    const expectedMax = Math.max(Math.floor(calibration.baseValues.womenActivityMax25to45 * 10) / 10, calibration.defaults.womenActivityLevel);
+    const sliderMax = Number(await page.getAttribute('#slider-womenActivityLevel', 'max'));
+    expect('Posuvník aktivity žien: dynamické maximum z kalibrácie', Math.abs(sliderMax - expectedMax) < 1e-9, `${sliderMax} vs ${expectedMax}`);
+    expect('Popis nad pyramídou s obyvateľstvom', (await page.textContent('#pyramidCaption')).startsWith('Obyvateľstvo k 1. 1. 2024'), await page.textContent('#pyramidCaption'));
     await page.screenshot({ path: path.join(outDir, 'desktop-2024.png') });
+
+    // Women-activity level and the share of mothers at home
+    await page.goto(`${baseUrl}/index.html#wl=82`);
+    await waitForResult(page);
+    expect('Úroveň aktivity žien 82 % sa v 2024 dosiahne (pravý panel)', (await page.textContent('#statWomenActivity')).trim() === '82,0 %', await page.textContent('#statWomenActivity'));
+    await page.goto(`${baseUrl}/index.html#wl=82&rod=40`);
+    await waitForResult(page);
+    const restored = [await page.inputValue('#slider-womenActivityLevel'), await page.inputValue('#slider-parentalHomeShare')];
+    expect('Odkaz #wl=82&rod=40 obnoví oba posuvníky', restored[0] === '82' && restored[1] === '40', restored.join(' / '));
+    const activityAt40 = parseFloat((await page.textContent('#statWomenActivity')).replace(',', '.'));
+    const ratioAt40 = Number(await page.textContent('#kpiRatioValue'));
+    expect('Menej matiek doma → vyššia aktivita žien a poznámka pod posuvníkom', activityAt40 > 82 && await page.isVisible('#womenActivityNote'),
+      `${activityAt40} %, ${await page.textContent('#womenActivityNote')}`);
+    await page.goto(`${baseUrl}/index.html`);
+    await waitForResult(page);
+    expect('Menej matiek doma → menej poberateľov na 100 platiteľov', ratioAt40 < Number(initialRatio), `${ratioAt40} vs ${initialRatio}`);
+
+    // Old link: numeric hidden state (6 = invalidní in the 8-state layout), retired 'wa', dependency chart
+    await page.goto(`${baseUrl}/index.html#wa=5&h=6&m=dependency`);
+    await waitForResult(page);
+    await page.waitForTimeout(250);
+    const disabledButton = page.locator('.legend-item', { hasText: 'Invalidný dôchodca' });
+    expect('Starý odkaz: h=6 skryje invalidných, wa sa ignoruje', (await disabledButton.getAttribute('aria-pressed')) === 'false'
+      && (await page.inputValue('#slider-womenActivityLevel')) === String(calibration.defaults.womenActivityLevel));
+    const dependencyLines = await page.locator('#seriesContainer svg g[aria-label="line"] path').count();
+    expect('Graf indexov závislosti má 3 čiary', dependencyLines === 3, `${dependencyLines} čiar`);
+    await page.goto(`${baseUrl}/index.html`);
+    await waitForResult(page);
 
     // Change TFR -> new simulation, scenario becomes custom, hash updated
     await page.locator('#slider-tfrTarget').fill('1.9');
@@ -125,8 +161,13 @@ async function runE2e(outDir) {
       const size = fs.statSync(target).size;
       expect(`Export ${kind}`, size > 500 && download.suggestedFilename().endsWith(extension), `${download.suggestedFilename()}, ${size} B`);
     }
-    const seriesCsv = fs.readFileSync(path.join(outDir, 'export-series.csv'), 'utf8').replace(/^﻿/, '').split('\n');
+    const seriesCsv = fs.readFileSync(path.join(outDir, 'export-series.csv'), 'utf8').replace(/^\uFEFF/, '').split('\n');
     expect('CSV časových radov: hlavička + 77 rokov', seriesCsv[0].startsWith('rok,obyvatelstvo_tis') && seriesCsv.filter(Boolean).length === 78, `${seriesCsv.filter(Boolean).length} riadkov`);
+    const requiredColumns = ['pn_tis', 'materska_tis', 'rodicovska_tis', 'starobna_zavislost', 'ekonomicka_zavislost_starsich', 'celkova_ekonomicka_zavislost', 'param_wl', 'param_rod'];
+    const header = seriesCsv[0].split(',');
+    expect('CSV časových radov: nové stĺpce', requiredColumns.every(column => header.includes(column)), requiredColumns.filter(column => !header.includes(column)).join(', ') || 'všetky');
+    const pyramidCsv = fs.readFileSync(path.join(outDir, 'export-pyramid.csv'), 'utf8').replace(/^\uFEFF/, '').split('\n').filter(Boolean);
+    expect('CSV pyramídy: 14 polí v každom riadku (4 + 10 stavov)', pyramidCsv.every(line => line.split(',').length === 14) && pyramidCsv.length === 1 + 202, `${pyramidCsv.length} riadkov`);
 
     // Reset
     await page.click('#resetButton');
@@ -150,6 +191,9 @@ async function runE2e(outDir) {
     await waitForResult(phonePage);
     const overflow = await phonePage.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect('Mobil: bez horizontálneho posúvania', overflow <= 1, `presah ${overflow}px`);
+    const tiles = await phonePage.locator('.kpi').evaluateAll(elements => elements.map(element => { const box = element.getBoundingClientRect(); return [Math.round(box.left), Math.round(box.top)]; }));
+    expect('Mobil: KPI v mriežke 2 × 2', tiles.length === 4 && tiles[0][1] === tiles[1][1] && tiles[2][1] === tiles[3][1] && tiles[2][1] > tiles[0][1] && tiles[0][0] === tiles[2][0],
+      JSON.stringify(tiles));
     await phonePage.screenshot({ path: path.join(outDir, 'phone-2050.png'), fullPage: true });
     await phonePage.click('#toggleControls');
     expect('Mobil: panel predpokladov sa otvorí', await phonePage.isVisible('#slider-tfrTarget'));

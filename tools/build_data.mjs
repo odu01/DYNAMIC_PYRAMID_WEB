@@ -12,15 +12,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  AGE_COUNT, OPEN_AGE, STATE, buildLifeTable, buildAsfr, allocateLabourStates,
+  AGE_COUNT, OPEN_AGE, STATE, STATE_COUNT, STATE_KEYS, buildLifeTable, allocateLabourStates, computeMotherShares,
+  buildLabourInputs, solveWomenActivityShift, runSimulation, interpolateProfile,
   hazardFromProbability, probabilityFromHazard, clamp
 } from '../model.js';
+import { SLIDERS } from '../config.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_BASE_YEAR = 2024;
 const MORTALITY_TARGET_YEAR = 2100;
 const DEFAULT_TARGET_YEAR = 2050;
 const PIVOT_AGE = 50;
+const CALIBRATION_SCHEMA_VERSION = 2;
 const SEX_KEYS = ['male', 'female'];
 
 // Modelling assumptions (documented in metodika.html; change here, then rebuild)
@@ -31,7 +34,8 @@ export const ASSUMPTIONS = Object.freeze({
   leeCarterExcludedYears: [2020, 2021, 2022],   // COVID-19 years left out of the b_x estimate
   sensitivityTaper: { startAge: 85, endAge: 100, endFactor: 0.25 },
   maternityLeaveWeeks: 34,             // materska (zakon c. 461/2003 Z. z.), standard case
-  sexRatioMaleShare: 0.512             // ~105 boys per 100 girls
+  sexRatioMaleShare: 0.512,            // ~105 boys per 100 girls
+  parentalLeaveLfsStatus: 'neaktívni (predpoklad; zaradenie vo VZPS overiť s ŠÚ SR)'
 });
 
 // Provisional values used only when the corresponding CSV is missing (NOT official data)
@@ -42,7 +46,8 @@ export const PROVISIONAL = Object.freeze({
   e0FemaleTarget: 88.5,
   retireAgeRef: 63,
   unemploymentRate: 5.3,
-  partTimeRate: 3.5
+  partTimeRate: 3.5,
+  parentalHomeShare: 0.8
 });
 
 // ─── Generic helpers ────────────────────────────────────────────────────────
@@ -435,12 +440,13 @@ function provisionalLabourProfiles(retireAgeRef) {
     if (age < 75) return 0.2;
     return 0.05;
   };
+  // Women who are neither pensioners, students nor mothers of children under 3 (parental leave is a separate
+  // state, so the former dip at 26-33 would count it twice)
   const activityFemale = age => {
     if (age < 20) return Math.max(0, activityMale(age) - 0.05);
-    if (age < 25) return [0.75, 0.78, 0.8, 0.8, 0.78][age - 20];
-    if (age < 34) return age === 25 ? 0.76 : 0.74;
-    if (age < 36) return age === 34 ? 0.78 : 0.82;
-    if (age < 40) return 0.88;
+    if (age < 25) return [0.80, 0.84, 0.87, 0.89, 0.90][age - 20];
+    if (age < 45) return 0.95;
+    if (age < 50) return 0.94;
     if (age < 55) return 0.93;
     if (age < 60) return 0.88;
     if (age < 63) return 0.75;
@@ -654,7 +660,8 @@ function migrationFromEurostat(immigrationRows, emigrationRows, preferredYear) {
  * LFS rate profiles by single age (activity, unemployment, part-time) from Eurostat lfsa_* extracts (%).
  * Inputs:  rows (object[]), preferredYear (number), fileName (string), totalGroups (string[]),
  *          fillAbove (number, value above the oldest group)
- * Output:  { year, profile: { male, female } number[101] (shares 0-1), total (share or NaN) }
+ * Output:  { year, profile: { male, female } number[101] (shares 0-1), groups: { male, female } { start, end, value }[],
+ *            total (share or NaN) }
  * Example: lfsProfileFromEurostat(rows, 2024, 'lfsa_urgan.csv', ['Y15-74'], 0)
  */
 function lfsProfileFromEurostat(rows, preferredYear, fileName, totalGroups, fillAbove) {
@@ -666,7 +673,7 @@ function lfsProfileFromEurostat(rows, preferredYear, fileName, totalGroups, fill
     if (!groups[sexKey].length) throw new Error(`${fileName}: chýbajú vekové skupiny pre ${sexKey} (${year}).`);
     profile[sexKey] = groupsToSingleAge(groups[sexKey], 0, fillAbove).map((value, age) => age < 15 ? 0 : clamp(value, 0, 1));
   }
-  return { year, profile, total: groups.total };
+  return { year, profile, groups: { male: groups.male, female: groups.female }, total: groups.total };
 }
 
 /**
@@ -726,29 +733,186 @@ function shareProfileFromTidy(rows, childrenAreOne) {
 }
 
 /**
- * Activity among persons who are neither pensioners nor students, from LFS activity of the whole
- * population: a' = (a - w_s s - w_d d - w_r r) / (1 - s - d - r), with w_r = a above the reference
- * retirement age (working pensioners) and 0 below it (early pensioners may not work).
- * Inputs:  marginal, student, disabled, retired ({ male, female } number[101]), retireAgeRef ({ male, female })
- * Output:  { male, female } (number[101], shares 0-0.995)
- * Example: conditionalActivity(lfs.profile, profiles.student, profiles.disabled, profiles.retired, { male: 63, female: 63 })
+ * Root of a non-decreasing function by bisection (saturates at the bracket ends).
+ * Inputs:  valueAt (function(number) -> number), target (number), lower, upper (number), iterations (integer)
+ * Output:  number
+ * Example: bisectRoot(theta => parentalAt(theta), 105, 0, 1, 50)
  */
-function conditionalActivity(marginal, student, disabled, retired, retireAgeRef) {
+function bisectRoot(valueAt, target, lower, upper, iterations = 60) {
+  if (valueAt(upper) <= target) return upper;
+  if (valueAt(lower) >= target) return lower;
+  let low = lower;
+  let high = upper;
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const middle = 0.5 * (low + high);
+    if (valueAt(middle) < target) low = middle;
+    else high = middle;
+  }
+  return 0.5 * (low + high);
+}
+
+/**
+ * Round a default (model units) to the grid of its page slider in config.js, so that the page's default
+ * scenario equals calibration.defaults exactly. Keys without a slider are returned unchanged.
+ * Inputs:  key (string, SLIDERS key), modelValue (number, model units)
+ * Output:  number (model units, on the slider grid)
+ * Example: snapToSliderGrid('parentalHomeShare', 0.783)  // -> 0.78
+ */
+function snapToSliderGrid(key, modelValue) {
+  const slider = SLIDERS.find(item => item.key === key);
+  if (!slider || !Number.isFinite(modelValue)) return modelValue;
+  const decimals = (String(slider.step).split('.')[1] || '').length;
+  const sliderValue = modelValue / slider.scale;
+  const snapped = Number((Math.round((sliderValue - slider.min) / slider.step) * slider.step + slider.min).toFixed(decimals));
+  return Number((snapped * slider.scale).toFixed(decimals + 4));
+}
+
+/**
+ * Convert a student share of the whole population (students.csv) to the model's share among persons who
+ * are not pensioners: s = s_pop / (1 - r - d), only where 1 - r - d > 0.05; clamped to [0, 1]; ages < 15 stay 1.
+ * Inputs:  populationShare, retired, disabled ({ male, female } number[101]), log (function)
+ * Output:  { male, female } (number[101])
+ * Example: studentShareConditional(shareProfileFromTidy(rows, true), profiles.retired, profiles.disabled, console.log)
+ */
+function studentShareConditional(populationShare, retired, disabled, log) {
+  let clampedAges = 0;
   const result = {};
   for (const sexKey of SEX_KEYS) {
     result[sexKey] = ageArray(age => {
-      if (age < 15) return 0;
-      const studentShare = student[sexKey][age];
-      const disabledShare = disabled[sexKey][age];
-      const retiredShare = retired[sexKey][age];
-      const workingPensionerShare = age >= retireAgeRef[sexKey] ? marginal[sexKey][age] * retiredShare : 0;
-      const numerator = marginal[sexKey][age] - ASSUMPTIONS.studentActivityShare * studentShare
-        - ASSUMPTIONS.disabledActivityShare * disabledShare - workingPensionerShare;
-      const denominator = 1 - studentShare - disabledShare - retiredShare;
-      return denominator > 1e-6 ? clamp(numerator / denominator, 0, 0.995) : 0;
+      if (age < 15) return 1;
+      const available = 1 - retired[sexKey][age] - disabled[sexKey][age];
+      if (!(available > 0.05)) return 0;
+      const share = populationShare[sexKey][age] / available;
+      if (share > 1) clampedAges++;
+      return clamp(share, 0, 1);
     });
   }
+  if (clampedAges) log(`  upozornenie: students.csv – podiel študentov orezaný na 1 v ${clampedAges} vekoch`);
   return result;
+}
+
+/**
+ * Conditional activity profiles (persons who are neither pensioners, students nor mothers of children aged
+ * 34 weeks-3 years) that reproduce the LFS activity of the whole population in the model's own allocation.
+ * 1. Each LFS age group is inverted with a constant conditional rate (sums over the ages of the group):
+ *    below the reference retirement age  a_g = sum N (aV - (1 - theta) mu_T - w_s S/N - w_d d) / sum N (q - mu_T - mu_N min(0.95, u lambda_U)),
+ *    from it on                          a_g = sum N (aV (1 - r) - w_s S/N - w_d d) / sum N q   (working pensioners are not modelled),
+ *    with q = (1 - r - d)(1 - s) and a fixed point for lambda_U.
+ * 2. The group rates are interpolated between group mid-points (the conditional profile is smooth, unlike the LFS
+ *    rate, which has the parental-leave dip) and corrected per group so that the forward model reproduces the
+ *    LFS group means below the retirement age exactly (3 passes).
+ * Inputs:  lfs ({ profile: { male, female } number[101], groups: { male, female } { start, end, value }[] })
+ *          context ({ population, labour (with profiles), defaults (model units), motherShares, parentalHomeShare })
+ * Output:  { profile: { male, female } number[101], maxGroupGap (p.p.), clampedAges (integer), unemploymentScale }
+ * Example: conditionalActivityFromLfs(lfsActivity, { population, labour, defaults, motherShares, parentalHomeShare: 0.8 })
+ */
+function conditionalActivityFromLfs(lfs, context) {
+  const { population, labour, defaults, motherShares, parentalHomeShare } = context;
+  const profiles = labour.profiles;
+  const shares = labour.lfsActivityShares;
+  const referenceAge = labour.retireAgeRef;
+  const composition = {};
+  for (const sexKey of SEX_KEYS) {
+    composition[sexKey] = ageArray(age => {
+      const retiredShare = clamp(interpolateProfile(profiles.retired[sexKey], age), 0, 1);
+      const disabledShare = Math.max(0, Math.min(1 - retiredShare, clamp(interpolateProfile(profiles.disabled[sexKey], age), 0, 1)));
+      const studentShare = clamp(interpolateProfile(profiles.student[sexKey], age), 0, 1);
+      return {
+        retiredShare, disabledShare,
+        studentsOfPopulation: (1 - retiredShare - disabledShare) * studentShare,
+        pool: (1 - retiredShare - disabledShare) * (1 - studentShare)
+      };
+    });
+  }
+  const motherShare = (sexKey, kind, age) => (sexKey === 'female' ? motherShares[kind][age] : 0);
+  const unemploymentAt = (sexKey, age) => clamp(interpolateProfile(profiles.unemployment[sexKey], age), 0, 1);
+  const effectivePool = (sexKey, age, scale) => composition[sexKey][age].pool - motherShare(sexKey, 'toddler', age)
+    - motherShare(sexKey, 'newborn', age) * Math.min(0.95, unemploymentAt(sexKey, age) * scale);
+  const groupRate = (sexKey, group, scale) => {
+    let numerator = 0;
+    let denominator = 0;
+    for (let age = Math.max(15, group.start); age <= group.end; age++) {
+      const persons = population[sexKey][age];
+      const { retiredShare, disabledShare, studentsOfPopulation, pool } = composition[sexKey][age];
+      if (age < referenceAge[sexKey]) {
+        numerator += persons * (group.value - (1 - parentalHomeShare) * motherShare(sexKey, 'toddler', age)
+          - shares.student * studentsOfPopulation - shares.disabled * disabledShare);
+        denominator += persons * Math.max(0, effectivePool(sexKey, age, scale));
+      } else {
+        numerator += persons * (group.value * (1 - retiredShare) - shares.student * studentsOfPopulation - shares.disabled * disabledShare);
+        denominator += persons * pool;
+      }
+    }
+    return denominator > 1e-9 ? clamp(numerator / denominator, 0, 0.995) : 0;
+  };
+  const interpolatedProfile = (sexKey, scale) => {
+    const rates = lfs.groups[sexKey].map(group => ({ start: group.start, end: group.end, value: groupRate(sexKey, group, scale) }));
+    const lastRate = rates.length ? rates[rates.length - 1].value : 0;
+    return groupsToSingleAge(rates, 0, lastRate).map((value, age) => (age < 15 ? 0 : clamp(value, 0, 0.995)));
+  };
+  const profile = {};
+  const forward = () => allocateLabourStates(population,
+    buildLabourInputs(defaults, labour, [referenceAge.male, referenceAge.female], 0, parentalHomeShare),
+    { ...profiles, activity: profile }, motherShares);
+
+  let unemploymentScale = 1;
+  for (let pass = 0; pass < 2; pass++) {
+    for (const sexKey of SEX_KEYS) profile[sexKey] = interpolatedProfile(sexKey, unemploymentScale);
+    unemploymentScale = forward().unemploymentScale || 1;
+  }
+
+  let maxGroupGap = 0;
+  for (let pass = 0; pass < 4; pass++) {
+    const result = forward();
+    maxGroupGap = 0;
+    for (const sexKey of SEX_KEYS) {
+      const sex = sexKey === 'male' ? 0 : 1;
+      for (const group of lfs.groups[sexKey]) {
+        if (group.start < 15 || group.end >= Math.floor(referenceAge[sexKey])) continue;
+        let persons = 0;
+        let active = 0;
+        let pool = 0;
+        for (let age = group.start; age <= group.end; age++) {
+          const persons_ = population[sexKey][age];
+          const offset = (age * 2 + sex) * STATE_COUNT;
+          active += result.states[offset + STATE.EMP_FULL] + result.states[offset + STATE.EMP_PART] + result.states[offset + STATE.SICK]
+            + result.states[offset + STATE.MATERNITY] + result.states[offset + STATE.UNEMP]
+            + shares.student * result.states[offset + STATE.STUDENT] + shares.disabled * result.states[offset + STATE.DISAB];
+          persons += persons_;
+          pool += persons_ * Math.max(0, effectivePool(sexKey, age, result.unemploymentScale));
+        }
+        if (!(persons > 0)) continue;
+        const gap = group.value - active / persons;
+        maxGroupGap = Math.max(maxGroupGap, Math.abs(gap));
+        const derivative = pool / persons;
+        if (pass < 3 && derivative > 0.05) {
+          for (let age = group.start; age <= group.end; age++) profile[sexKey][age] = clamp(profile[sexKey][age] + gap / derivative, 0, 0.995);
+        }
+      }
+    }
+    unemploymentScale = result.unemploymentScale;
+  }
+
+  let clampedAges = 0;
+  for (const sexKey of SEX_KEYS) {
+    for (let age = 15; age < referenceAge[sexKey]; age++) if (profile[sexKey][age] >= 0.995 - 1e-12) clampedAges++;
+  }
+  return { profile, maxGroupGap: 100 * maxGroupGap, clampedAges, unemploymentScale };
+}
+
+/**
+ * Share of mothers at home (theta) at which the model's parental-leave stock in the base year equals a target
+ * (for example non-working recipients of rodičovský príspevok from ÚPSVaR); bisection on [0, 1].
+ * Inputs:  population ({ male, female }), labour (calibration.labour), defaults (model units),
+ *          motherShares (computeMotherShares output), targetThousands (number)
+ * Output:  number (theta in [0, 1])
+ * Example: solveParentalHomeShare(basePopulation, labour, labourDefaults, motherShares, 105.2)
+ */
+function solveParentalHomeShare(population, labour, defaults, motherShares, targetThousands) {
+  const parentalAt = theta => allocateLabourStates(population,
+    buildLabourInputs(defaults, labour, [labour.retireAgeRef.male, labour.retireAgeRef.female], 0, theta),
+    labour.profiles, motherShares).totals[STATE.PARENTAL];
+  return bisectRoot(parentalAt, targetThousands, 0, 1, 50);
 }
 
 /**
@@ -879,10 +1043,10 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
     components.migration = provisional('Čistá migrácia 1 tis./rok, gaussovský vekový profil (priemer 27, sd 12).');
   }
 
-  // Labour market
+  // Labour market (defaults are rounded to the page sliders' grid so the page reproduces the calibration)
   const retireAgeRef = {
-    male: parameter('retire_age_ref_male', PROVISIONAL.retireAgeRef),
-    female: parameter('retire_age_ref_female', PROVISIONAL.retireAgeRef)
+    male: snapToSliderGrid('retireAgeMale', parameter('retire_age_ref_male', PROVISIONAL.retireAgeRef)),
+    female: snapToSliderGrid('retireAgeFemale', parameter('retire_age_ref_female', PROVISIONAL.retireAgeRef))
   };
   components.retirementAge = parameters.retire_age_ref_male
     ? official(parameters.retire_age_ref_male.source, baseYear)
@@ -900,8 +1064,8 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
   }
   const studentRows = readRaw('students.csv');
   if (studentRows) {
-    profiles.student = shareProfileFromTidy(studentRows, true);
-    components.students = official('data/raw/students.csv', baseYear);
+    profiles.student = studentShareConditional(shareProfileFromTidy(studentRows, true), profiles.retired, profiles.disabled, log);
+    components.students = official('data/raw/students.csv (podiel na obyvateľstve, prepočítaný na osoby mimo dôchodcov)', baseYear);
   } else {
     components.students = provisional('Parametrický profil podielu študentov 15–29 rokov.');
   }
@@ -915,14 +1079,6 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
 
   let unemploymentDefault = PROVISIONAL.unemploymentRate;
   let partTimeDefault = PROVISIONAL.partTimeRate;
-  const activityRows = readRaw('lfsa_argan.csv');
-  if (activityRows) {
-    const lfs = lfsProfileFromEurostat(activityRows, baseYear, 'lfsa_argan.csv', ['Y15-74', 'Y15-64'], 0.02);
-    profiles.activity = conditionalActivity(lfs.profile, profiles.student, profiles.disabled, profiles.retired, retireAgeRef);
-    components.activity = official('Eurostat lfsa_argan (miera aktivity, VZPS) prepočítaná na podmienenú aktivitu', lfs.year);
-  } else {
-    components.activity = provisional('Parametrické krivky podmienenej aktivity (muži ≈ 96 % v 25–49, ženy s poklesom 26–33).');
-  }
   const unemploymentRows = readRaw('lfsa_urgan.csv');
   if (unemploymentRows) {
     const lfs = lfsProfileFromEurostat(unemploymentRows, baseYear, 'lfsa_urgan.csv', ['Y15-74', 'Y15-64', 'Y20-64'], 0.03);
@@ -941,15 +1097,64 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
   } else {
     components.partTime = provisional('Vekový profil čiastočných úväzkov, agregát 3,5 %.');
   }
-  unemploymentDefault = parameter('unemployment_rate', unemploymentDefault);
-  partTimeDefault = parameter('part_time_rate', partTimeDefault);
+  unemploymentDefault = snapToSliderGrid('unemploymentRate', parameter('unemployment_rate', unemploymentDefault));
+  partTimeDefault = snapToSliderGrid('partTimeRate', parameter('part_time_rate', partTimeDefault));
 
   const maternityLeaveYears = parameter('maternity_leave_weeks', ASSUMPTIONS.maternityLeaveWeeks) / 52;
-  const labour = { retireAgeRef, pivotAge: PIVOT_AGE, maternityLeaveYears, profiles };
+  const lfsActivityShares = { student: ASSUMPTIONS.studentActivityShare, disabled: ASSUMPTIONS.disabledActivityShare };
+  const labour = { retireAgeRef, pivotAge: PIVOT_AGE, maternityLeaveYears, lfsActivityShares, profiles };
+  const baseMotherShares = computeMotherShares(basePopulation, fertility.shape, maternityLeaveYears);
+  const labourDefaults = { unemploymentRate: unemploymentDefault, partTimeRate: partTimeDefault, disabilityMultiplier: 1, studyShift: 0 };
+
+  // Share of mothers at home (theta): parameter, or solved from ÚPSVaR non-working recipients, or provisional
+  let parentalHomeShare = PROVISIONAL.parentalHomeShare;
+  let parentalSource = null;
+  if (parameters.parental_home_share) {
+    const value = parameters.parental_home_share.value;
+    parentalHomeShare = clamp(value > 1 ? value / 100 : value, 0, 1);
+    parentalSource = parameters.parental_home_share.source;
+  }
+  parentalHomeShare = snapToSliderGrid('parentalHomeShare', parentalHomeShare);
+  const recipientsNotWorking = parameters.parental_recipients_not_working ? parameters.parental_recipients_not_working.value / 1000 : NaN;
+
+  // Activity: LFS conversion depends on theta, theta from ÚPSVaR depends on activity -> short fixed point
+  const activityRows = readRaw('lfsa_argan.csv');
+  const lfsActivity = activityRows ? lfsProfileFromEurostat(activityRows, baseYear, 'lfsa_argan.csv', ['Y15-74', 'Y15-64'], 0.02) : null;
+  let conversion = null;
+  for (let iteration = 0; iteration < 4; iteration++) {
+    if (lfsActivity) {
+      conversion = conditionalActivityFromLfs(lfsActivity, { population: basePopulation, labour, defaults: labourDefaults, motherShares: baseMotherShares, parentalHomeShare });
+      profiles.activity = conversion.profile;
+    }
+    if (!Number.isFinite(recipientsNotWorking)) break;
+    const solved = snapToSliderGrid('parentalHomeShare', solveParentalHomeShare(basePopulation, labour, labourDefaults, baseMotherShares, recipientsNotWorking));
+    parentalSource = parameters.parental_recipients_not_working.source;
+    const converged = Math.abs(solved - parentalHomeShare) < 0.005;
+    parentalHomeShare = solved;
+    if (converged) break;
+  }
+  if (lfsActivity) {
+    components.activity = official('Eurostat lfsa_argan (miera aktivity, VZPS) prepočítaná na podmienenú aktivitu', lfsActivity.year);
+    if (conversion.maxGroupGap > 0.5) log(`  upozornenie: model nereprodukuje VZPS – najväčšia odchýlka vekovej skupiny ${conversion.maxGroupGap.toFixed(2)} p. b.`);
+    if (conversion.clampedAges) log(`  upozornenie: podmienená aktivita narazila na hranicu 0,995 v ${conversion.clampedAges} vekoch (skontrolujte podiel matiek doma)`);
+  } else {
+    components.activity = provisional('Parametrické krivky aktivity osôb mimo dôchodcov, študentov a matiek malých detí (muži ≈ 96 %, ženy 25–44 ≈ 95 %).');
+  }
+  components.parentalLeave = parentalSource
+    ? official(parentalSource, baseYear)
+    : provisional('Podiel matiek doma s dieťaťom od 34. týždňa do 3 rokov 80 % (odhad; nahradiť dátami ÚPSVaR).');
+
+  // Women 25-45: activity at the default settings (shift 0) -> default level and attainable maximum
+  const womenActivityAtDefaults = solveWomenActivityShift(basePopulation,
+    buildLabourInputs(labourDefaults, labour, [retireAgeRef.male, retireAgeRef.female], 0, parentalHomeShare),
+    profiles, baseMotherShares, NaN);
+  const womenActivityLevel = snapToSliderGrid('womenActivityLevel', 100 * womenActivityAtDefaults.achieved);
+  const womenActivityMax = 100 * womenActivityAtDefaults.maximum;
+  if (womenActivityMax - womenActivityLevel < 1) log(`  upozornenie: aktivitu žien 25–45 možno zvýšiť len o ${(womenActivityMax - womenActivityLevel).toFixed(2)} p. b. (maximum ${womenActivityMax.toFixed(1)} %)`);
 
   // Targets of the base scenario
-  const e0MaleTarget = parameter('e0_male_target', PROVISIONAL.e0MaleTarget);
-  const e0FemaleTarget = parameter('e0_female_target', PROVISIONAL.e0FemaleTarget);
+  const e0MaleTarget = snapToSliderGrid('e0MaleTarget', parameter('e0_male_target', PROVISIONAL.e0MaleTarget));
+  const e0FemaleTarget = snapToSliderGrid('e0FemaleTarget', parameter('e0_female_target', PROVISIONAL.e0FemaleTarget));
   components.targets = parameters.e0_male_target
     ? official(parameters.e0_male_target.source, MORTALITY_TARGET_YEAR)
     : provisional(`Cieľové e0 v roku ${MORTALITY_TARGET_YEAR}: muži ${e0MaleTarget}, ženy ${e0FemaleTarget} (odhad; nahradiť predpokladmi EUROPOP2023).`);
@@ -966,6 +1171,7 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
 
   const calibration = {
     meta: {
+      schemaVersion: CALIBRATION_SCHEMA_VERSION,
       status: 'provisional',
       generatedAt: new Date().toISOString().slice(0, 10),
       generator: 'tools/build_data.mjs',
@@ -979,55 +1185,54 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
     migration,
     labour,
     defaults: {
-      tfrTarget: Number(parameter('tfr_target', fertility.tfrBase).toFixed(2)),
-      migrationTarget: Number(parameter('migration_target', migration.netBase).toFixed(1)),
-      targetYear: parameter('target_year', DEFAULT_TARGET_YEAR),
+      tfrTarget: snapToSliderGrid('tfrTarget', parameter('tfr_target', fertility.tfrBase)),
+      migrationTarget: snapToSliderGrid('migrationTarget', parameter('migration_target', migration.netBase)),
+      targetYear: snapToSliderGrid('targetYear', parameter('target_year', DEFAULT_TARGET_YEAR)),
       e0MaleTarget,
       e0FemaleTarget,
       retireAgeMale: retireAgeRef.male,
       retireAgeFemale: retireAgeRef.female,
       retireAgeLinkShare: 0,
-      unemploymentRate: Number(unemploymentDefault.toFixed(1)),
-      womenActivityChange: 0,
-      partTimeRate: Number(partTimeDefault.toFixed(1)),
+      unemploymentRate: unemploymentDefault,
+      womenActivityLevel,
+      parentalHomeShare,
+      partTimeRate: partTimeDefault,
       disabilityMultiplier: 1,
-      studyShift: 0
+      studyShift: 0,
+      womenActivityChange: 0
     },
     baseValues: {}
   };
-  const coreComponents = ['population', 'mortality', 'fertility', 'pensions', 'activity', 'unemployment'];
+  const coreComponents = ['population', 'mortality', 'fertility', 'pensions', 'activity', 'unemployment', 'parentalLeave'];
   const coreStatuses = coreComponents.map(name => components[name].status);
   calibration.meta.status = coreStatuses.every(status => status === 'official') ? 'official'
     : coreStatuses.some(status => status === 'official') ? 'partial' : 'provisional';
 
-  // Base-year values (shown in tooltips and in the methodology)
+  // Base-year values: exactly what the page shows for the default scenario (shown in tooltips and docs)
   const lifeTableMale = buildLifeTable(mortality.male.qx);
   const lifeTableFemale = buildLifeTable(mortality.female.qx);
-  const asfr = buildAsfr(fertility.shape, fertility.tfrBase);
-  const labourBase = allocateLabourStates(basePopulation, {
-    retireAge: [retireAgeRef.male, retireAgeRef.female],
-    retireAgeRef: [retireAgeRef.male, retireAgeRef.female],
-    pivotAge: PIVOT_AGE,
-    unemploymentRate: unemploymentDefault / 100,
-    partTimeRate: partTimeDefault / 100,
-    womenActivityShift: 0,
-    disabilityMultiplier: 1,
-    studyShift: 0,
-    maternityLeaveYears
-  }, profiles, asfr);
-  const totalPopulation = SEX_KEYS.reduce((sum, sexKey) => sum + basePopulation[sexKey].reduce((inner, value) => inner + value, 0), 0);
+  const baseRun = runSimulation(basePopulation, calibration.defaults, calibration, baseYear, baseYear);
+  const baseSeries = baseRun.series;
+  const baseTotals = baseSeries.stateTotals[0];
   calibration.baseValues = {
-    population: totalPopulation,
+    population: baseSeries.total[0],
     e0Male: lifeTableMale.ex[0],
     e0Female: lifeTableFemale.ex[0],
     e65Male: lifeTableMale.ex[65],
     e65Female: lifeTableFemale.ex[65],
     tfr: fertility.tfrBase,
     netMigration: migration.netBase,
-    womenActivity25to45: 100 * labourBase.womenActivity25to45,
-    stateTotals: Object.fromEntries(Object.entries(STATE).map(([key, index]) => [key, labourBase.totals[index]])),
-    payers: labourBase.payers,
-    recipients: labourBase.recipients
+    womenActivity25to45: baseSeries.womenActivity25to45[0],
+    womenActivityMax25to45: womenActivityMax,
+    stateTotals: Object.fromEntries(STATE_KEYS.map((key, index) => [key, baseTotals[index]])),
+    payers: baseSeries.payers[0],
+    recipients: baseSeries.recipients[0],
+    recipientsPer100Payers: baseSeries.recipientsPer100Payers[0],
+    oldAgeDependency: baseSeries.oldAgeDependency[0],
+    economicOldAgeDependency: baseSeries.economicOldAgeDependency[0],
+    economicDependency: baseSeries.economicDependency[0],
+    maternity: baseSeries.maternity[0],
+    parental: baseSeries.parental[0]
   };
 
   if (write) {
@@ -1040,8 +1245,11 @@ export function buildCalibration({ rawDir, outDir, write = true, log = console.l
   const summary = Object.entries(components).map(([name, info]) => `${info.status.padEnd(11)} ${name.padEnd(21)} ${info.source}${info.year ? ' [' + info.year + ']' : ''}`);
   log(`Kalibrácia: ${calibration.meta.status} (základný rok ${baseYear})`);
   for (const line of summary) log('  ' + line);
-  log(`  e0 ${calibration.baseValues.e0Male.toFixed(2)} / ${calibration.baseValues.e0Female.toFixed(2)}, TFR ${fertility.tfrBase.toFixed(2)}, ` +
-    `aktivita žien 25–45 ${calibration.baseValues.womenActivity25to45.toFixed(1)} %`);
+  const values = calibration.baseValues;
+  log(`  e0 ${values.e0Male.toFixed(2)} / ${values.e0Female.toFixed(2)}, TFR ${fertility.tfrBase.toFixed(2)}, ` +
+    `aktivita žien 25–45 ${values.womenActivity25to45.toFixed(1)} % (max. ${values.womenActivityMax25to45.toFixed(1)} %), matky doma ${(100 * calibration.defaults.parentalHomeShare).toFixed(0)} %`);
+  log(`  materská ${values.maternity.toFixed(1)} tis., rodičovská ${values.parental.toFixed(1)} tis.; na 100 platiteľov: poberatelia ${values.recipientsPer100Payers.toFixed(1)}, ` +
+    `starobní dôchodcovia ${values.economicOldAgeDependency.toFixed(1)}, neplatitelia ${values.economicDependency.toFixed(1)}; 65+/20–64 ${values.oldAgeDependency.toFixed(1)}`);
   return { calibration, anchors, benchmark, summary };
 }
 

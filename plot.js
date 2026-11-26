@@ -9,7 +9,7 @@ import { formatNumber, formatThousandsDetail } from './format.js';
 
 const AGE_BIN_WIDTH = 5;
 const OPEN_AGE = 100;
-const STATE_COUNT = 8;
+const STATE_COUNT = STATE_META.length;
 const BIN_COUNT = Math.floor(OPEN_AGE / AGE_BIN_WIDTH) + 1;   // 0-4, ..., 95-99, 100+
 const TEXT_COLOR = '#3A4458';
 const AXIS_COLOR = '#8A93A6';
@@ -109,6 +109,7 @@ export function renderPyramid(container, options) {
     Plot.gridX({ stroke: '#E3E8EF', strokeOpacity: 1 }),
     Plot.barX(rows, Plot.stackX({
       y: 'ageGroup', x: 'population', fill: 'state', order: 'stateOrder',
+      stroke: '#FFFFFF', strokeWidth: 0.5,
       title: 'tip', tip: { fill: '#FFFFFF', stroke: '#D9DFE8', fontSize: 12 }
     })),
     Plot.ruleX([0], { stroke: AXIS_COLOR, strokeWidth: 1 }),
@@ -144,14 +145,16 @@ export function renderPyramid(container, options) {
 }
 
 /**
- * Draw a time-series chart of one metric (replaces the container content).
+ * Draw a time-series chart of one metric (replaces the container content). When the colour legend wraps to
+ * several lines, the plot is drawn again with a smaller height so that the whole figure fits the container.
  * Inputs:  container (HTMLElement), options ({ metric (SERIES_METRICS item), years (number[]), series (object of
- *          number[]), benchmarkSeries ({ years, [key]: number[] } | null), currentYear, width, height })
+ *          number[]), benchmarkSeries ({ years, [key]: number[] } | null), currentYear, referenceValue
+ *          (number | null, horizontal reference line), width, height (pixels) })
  * Output:  HTMLElement | SVGElement (the chart)
- * Example: renderTimeSeries(element, { metric, years, series, benchmarkSeries: null, currentYear: 2050, width: 800, height: 180 })
+ * Example: renderTimeSeries(element, { metric, years, series, benchmarkSeries: null, currentYear: 2050, referenceValue: null, width: 800, height: 180 })
  */
 export function renderTimeSeries(container, options) {
-  const { metric, years, series, benchmarkSeries, currentYear, width, height } = options;
+  const { metric, years, series, benchmarkSeries, currentYear, referenceValue, width, height } = options;
   const rows = [];
   for (const line of metric.lines) {
     const factor = line.factor ?? 1;
@@ -162,8 +165,9 @@ export function renderTimeSeries(container, options) {
   const benchmarkRows = [];
   if (benchmarkSeries && metric.benchmarkKey) {
     const factor = metric.benchmarkFactor ?? 1;
-    benchmarkSeries.years.forEach((year, index) => benchmarkRows.push({ year, value: benchmarkSeries[metric.benchmarkKey][index] * factor, line: 'EUROPOP2023' }));
-    colorDomain.push('EUROPOP2023');
+    const label = metric.benchmarkLabel || 'EUROPOP2023';
+    benchmarkSeries.years.forEach((year, index) => benchmarkRows.push({ year, value: benchmarkSeries[metric.benchmarkKey][index] * factor, line: label }));
+    colorDomain.push(label);
     colorRange.push('#1C2541');
   }
   const currentRows = rows.filter(row => row.year === currentYear);
@@ -177,20 +181,34 @@ export function renderTimeSeries(container, options) {
   if (benchmarkRows.length) {
     marks.splice(1, 0, Plot.line(benchmarkRows, { x: 'year', y: 'value', stroke: 'line', strokeWidth: 1.6, strokeDasharray: '5,3' }));
   }
+  if (Number.isFinite(referenceValue)) {
+    marks.unshift(Plot.ruleY([referenceValue], { stroke: '#3657A7', strokeOpacity: 0.6, strokeDasharray: '2,3' }));
+  }
   if (metric.zero) marks.unshift(Plot.ruleY([0], { stroke: AXIS_COLOR }));
   const showLegend = colorDomain.length > 1;
-  const chart = Plot.plot({
+  const draw = plotHeight => Plot.plot({
     width,
-    height: showLegend ? Math.max(80, height - 30) : height,
+    height: Math.max(80, plotHeight),
     marginLeft: 48, marginRight: 16, marginTop: 14, marginBottom: 28,
     style: CHART_STYLE,
     x: { label: null, tickFormat: value => String(value), ticks: width < 520 ? 4 : 8 },
-    y: { label: null, grid: true, zero: Boolean(metric.zero), tickFormat: value => formatNumber(value, metric.digits >= 2 ? 1 : 0), ticks: 4 },
+    y: {
+      label: null, grid: true, zero: Boolean(metric.zero), domain: metric.yDomain,
+      tickFormat: value => formatNumber(value, metric.digits >= 2 ? 1 : 0), ticks: 4
+    },
     color: { domain: colorDomain, range: colorRange, legend: showLegend },
     marks
   });
-  chart.setAttribute('aria-label', `Časový vývoj: ${metric.label}`);
+  let chart = draw(showLegend ? height - 30 : height);
   container.replaceChildren(chart);
+  if (showLegend) {
+    const overflow = chart.getBoundingClientRect().height - height;
+    if (overflow > 1) {
+      chart = draw(height - 30 - overflow);
+      container.replaceChildren(chart);
+    }
+  }
+  chart.setAttribute('aria-label', `Časový vývoj: ${metric.label}`);
   return chart;
 }
 
@@ -229,7 +247,7 @@ export function composeExportSvg(chartSvg, options) {
   for (const item of legendItems) {
     const itemWidth = 18 + item.label.length * 6.6 + 18;
     if (cursorX + itemWidth > width - 16) { cursorX = 16; cursorY += 20; }
-    legendMarkup.push(`<rect x="${cursorX}" y="${cursorY}" width="11" height="11" rx="2" fill="${item.color}"/>` +
+    legendMarkup.push(`<rect x="${cursorX}" y="${cursorY}" width="11" height="11" rx="2" fill="${item.color}" stroke="rgba(28,37,65,0.25)" stroke-width="1"/>` +
       `<text x="${cursorX + 16}" y="${cursorY + 10}" font-size="12" fill="${TEXT_COLOR}">${escapeXml(item.label)}</text>`);
     cursorX += itemWidth;
   }

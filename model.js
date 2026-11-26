@@ -11,26 +11,31 @@
 //   P_0(t+1)     = B(t) * s * L_0/l_0 + M_0(t)                            s = sex share at birth
 // Mortality improvement: Lee-Carter  ln m_x(t) = a_x + b_x * k_t, k_t linear in t,
 //   k_T solved so that e0(T) equals the scenario target.
-// Labour market: conditional waterfall over 8 mutually exclusive states (see allocateLabourStates).
+// Labour market: conditional waterfall over 10 mutually exclusive states (see allocateLabourStates);
+//   mothers of children under 3 are anchored on the children aged 0-2 in the population (computeMotherShares).
 
 export const AGE_COUNT = 101;
 export const OPEN_AGE = 100;
-export const STATE_COUNT = 8;
+export const STATE_COUNT = 10;
 export const STATE = Object.freeze({
-  EMP_FULL: 0, EMP_PART: 1, STUDENT: 2, INACTIVE: 3,
-  UNEMP: 4, SICK_MAT: 5, DISAB: 6, RETIRED: 7
+  EMP_FULL: 0, EMP_PART: 1, STUDENT: 2, INACTIVE: 3, UNEMP: 4,
+  SICK: 5, MATERNITY: 6, PARENTAL: 7, DISAB: 8, RETIRED: 9
 });
 export const STATE_KEYS = Object.freeze([
-  'EMP_FULL', 'EMP_PART', 'STUDENT', 'INACTIVE', 'UNEMP', 'SICK_MAT', 'DISAB', 'RETIRED'
+  'EMP_FULL', 'EMP_PART', 'STUDENT', 'INACTIVE', 'UNEMP', 'SICK', 'MATERNITY', 'PARENTAL', 'DISAB', 'RETIRED'
 ]);
 export const CHILD_AGE_LIMIT = 15;
+export const WOMEN_ACTIVITY_AGES = Object.freeze([25, 45]);
 
 const INFANT_DEATH_TIMING = 0.1;   // a_0: mean fraction of the first year lived by infants who die
 const MAX_PROBABILITY = 0.999999;
 const MAX_UNEMPLOYMENT_SHARE = 0.95;
-const MAX_ABSENCE_SHARE = 0.6;
+const MAX_SICK_SHARE = 0.6;
 const MAX_ACTIVITY_SHARE = 0.995;
+const MAX_MOTHER_SHARE = 0.9;      // technical bound: mothers of children under 3 <= 90 % of the available pool
 const RETIREMENT_AGE_BOUNDS = [55, 75];
+const DEFAULT_PARENTAL_HOME_SHARE = 0.8;
+const DEFAULT_LFS_ACTIVITY_SHARES = Object.freeze({ student: 0.10, disabled: 0.30 });
 
 // ─── Small numeric helpers ───────────────────────────────────────────────────
 
@@ -314,50 +319,164 @@ export function effectiveLabourAge(age, retireAge, retireAgeRef, pivotAge) {
 }
 
 /**
- * Allocate every age-sex cohort to 8 mutually exclusive labour states (conditional waterfall):
- *   age < 15                     -> STUDENT (dependent children)
- *   RETIRED  = N * r(x')                      old-age + early pension (x' = effectiveLabourAge)
- *   DISAB    = N * d(x') * disabilityMultiplier
- *   STUDENT  = (N - R - D) * s(x - studyShift)
- *   active   = (N - R - D - S) * a(x') [+ shift for women 25-45];  INACTIVE = the rest
- *   UNEMP    = active * u(x) * scaleU    scaleU sets the aggregate unemployment rate to the target
- *   SICK_MAT = employed * (sick(x) + f_x * maternityLeaveYears)   (maternity for women only)
- *   EMP_PART = working * p(x) * scaleP   scaleP sets the aggregate part-time share to the target
- *   EMP_FULL = working - EMP_PART
- * Inputs:  population ({ male, female }: Float64Array(101), thousands)
- *          labourInputs ({ retireAge: [m, f], retireAgeRef: [m, f], pivotAge, unemploymentRate (0-1),
- *                          partTimeRate (0-1), womenActivityShift (share), disabilityMultiplier,
- *                          studyShift (years), maternityLeaveYears })
- *          profiles ({ retired, disabled, student, activity, unemployment, partTime, sick }:
- *                     each { male, female } number[101])
- *          asfr (Float64Array(101), fertility rates of the year, drives maternity leave)
- * Output:  { states: Float64Array(101*2*8) indexed [(age*2 + sex)*8 + state], totals: Float64Array(8),
- *            payers, recipients, womenActivity25to45 (share) }
- * Example: allocateLabourStates(pop2024, labourInputs, calibration.labour.profiles, asfr2024).totals
+ * Return a value when it is a finite number, otherwise a fallback.
+ * Inputs:  value (any), fallback (number)
+ * Output:  number
+ * Example: finiteOr(undefined, 0.8)  // -> 0.8
  */
-export function allocateLabourStates(population, labourInputs, profiles, asfr) {
+function finiteOr(value, fallback) {
+  return Number.isFinite(value) ? value : fallback;
+}
+
+/**
+ * Argument at which a non-decreasing function reaches a target (bisection). When the target lies outside
+ * [valueAt(lower), valueAt(upper)] the nearer bound is returned (saturation).
+ * Inputs:  valueAt (function(number) -> number, non-decreasing), target (number),
+ *          lower, upper (number, bracket), iterations (integer, default 100)
+ * Output:  number (argument)
+ * Example: bisectIncreasing(x => x * x, 2, 0, 2)  // -> 1.41421...
+ */
+function bisectIncreasing(valueAt, target, lower, upper, iterations = 100) {
+  if (valueAt(upper) <= target) return upper;
+  if (valueAt(lower) >= target) return lower;
+  let low = lower;
+  let high = upper;
+  for (let iteration = 0; iteration < iterations; iteration++) {
+    const middle = 0.5 * (low + high);
+    if (valueAt(middle) < target) low = middle;
+    else high = middle;
+  }
+  return 0.5 * (low + high);
+}
+
+/**
+ * Upper bracket for a scale lambda applied as min(cap, propensity * lambda): beyond it every cohort with a
+ * positive propensity is at the cap, so the aggregate no longer changes.
+ * Inputs:  propensities (Float64Array, per cohort), weights (Float64Array, per cohort), cap (number)
+ * Output:  number (0 when no cohort has both a positive weight and a positive propensity)
+ * Example: saturationScale(unemploymentPropensity, activeBase, 0.95)
+ */
+function saturationScale(propensities, weights, cap) {
+  let smallest = Infinity;
+  for (let index = 0; index < propensities.length; index++) {
+    if (weights[index] > 0 && propensities[index] > 0) smallest = Math.min(smallest, propensities[index]);
+  }
+  return Number.isFinite(smallest) ? cap / smallest : 0;
+}
+
+/**
+ * Shares of women by single age who are mothers of a child under 34 weeks ("newborn") and of a child aged
+ * 34 weeks to 3 years ("toddler"), anchored on the children aged 0-2 in the population. Children of age c
+ * are assigned to mothers by the fertility age pattern at the mother's age at birth:
+ *   g_o(x) = phi(x - o) / sum_y F_y phi(y - o),
+ *   newborn(x) = tau C_0 g_{tau/2}(x),
+ *   toddler(x) = (1 - tau) C_0 g_{(1+tau)/2}(x) + C_1 g_{1.5}(x) + C_2 g_{2.5}(x),
+ * so that sum_x F_x newborn(x) = tau C_0 and sum_x F_x (newborn + toddler)(x) = C_0 + C_1 + C_2.
+ * Inputs:  population ({ male, female }: Float64Array(101), thousands on 1 January)
+ *          fertilityShape (number[101], age pattern of fertility, any positive scale)
+ *          maternityLeaveYears (number, tau = 34/52)
+ * Output:  { newborn: Float64Array(101), toddler: Float64Array(101) } (shares of women of each age)
+ * Example: computeMotherShares(pop2024, calibration.fertility.shape, 34 / 52).toddler[30]
+ */
+export function computeMotherShares(population, fertilityShape, maternityLeaveYears) {
+  const newborn = new Float64Array(AGE_COUNT);
+  const toddler = new Float64Array(AGE_COUNT);
+  const children = [0, 1, 2].map(age => population.male[age] + population.female[age]);
+  const shapeAt = age => (age < 0 || age > OPEN_AGE ? 0 : Math.max(0, interpolateProfile(fertilityShape, age)));
+  const kernel = offset => {
+    const weights = new Float64Array(AGE_COUNT);
+    let denominator = 0;
+    for (let age = 0; age < AGE_COUNT; age++) {
+      weights[age] = shapeAt(age - offset);
+      denominator += population.female[age] * weights[age];
+    }
+    if (!(denominator > 0)) return new Float64Array(AGE_COUNT);
+    for (let age = 0; age < AGE_COUNT; age++) weights[age] /= denominator;
+    return weights;
+  };
+  const tau = clamp(finiteOr(maternityLeaveYears, 34 / 52), 0, 1);
+  const kernelNewborn = kernel(tau / 2);
+  const kernelAfterMaternity = kernel((1 + tau) / 2);
+  const kernelAgeOne = kernel(1.5);
+  const kernelAgeTwo = kernel(2.5);
+  for (let age = 0; age < AGE_COUNT; age++) {
+    newborn[age] = tau * children[0] * kernelNewborn[age];
+    toddler[age] = (1 - tau) * children[0] * kernelAfterMaternity[age] + children[1] * kernelAgeOne[age] + children[2] * kernelAgeTwo[age];
+  }
+  return { newborn, toddler };
+}
+
+/**
+ * Labour inputs of allocateLabourStates from slider settings in model units.
+ * Inputs:  settings ({ unemploymentRate (%), partTimeRate (%), disabilityMultiplier, studyShift }),
+ *          labour (calibration.labour), retireAges ([male, female] years), womenActivityShift (share),
+ *          parentalHomeShare (0-1)
+ * Output:  object (labourInputs)
+ * Example: buildLabourInputs(scenario, calibration.labour, [63, 63], 0, 0.8)
+ */
+export function buildLabourInputs(settings, labour, retireAges, womenActivityShift, parentalHomeShare) {
+  return {
+    retireAge: retireAges,
+    retireAgeRef: [labour.retireAgeRef.male, labour.retireAgeRef.female],
+    pivotAge: labour.pivotAge,
+    unemploymentRate: finiteOr(settings.unemploymentRate, 0) / 100,
+    partTimeRate: finiteOr(settings.partTimeRate, 0) / 100,
+    womenActivityShift: finiteOr(womenActivityShift, 0),
+    disabilityMultiplier: finiteOr(settings.disabilityMultiplier, 1),
+    studyShift: finiteOr(settings.studyShift, 0),
+    parentalHomeShare: clamp(finiteOr(parentalHomeShare, DEFAULT_PARENTAL_HOME_SHARE), 0, 1),
+    lfsActivityShares: labour.lfsActivityShares || DEFAULT_LFS_ACTIVITY_SHARES
+  };
+}
+
+/**
+ * Allocate every age-sex cohort N to 10 mutually exclusive labour states (conditional waterfall):
+ *   age < 15 -> STUDENT (dependent children). Otherwise, with x' = effectiveLabourAge:
+ *   RETIRED R = N r(x');  DISAB D = min(N - R, N delta d(x'));  STUDENT S = (N - R - D) s(x - studyShift)
+ *   Q = N - R - D - S.  Women only: Y_N = N newborn(x), Y_T = N toddler(x), scaled down if above 0.9 Q;
+ *   H = theta Y_T (at home -> PARENTAL), K = (1 - theta) Y_T (working mothers -> employed).
+ *   Q~ = Q - Y_T, nu = Y_N / Q~;  A = Q~ clamp(a(x') + shift [women 25-45], 0, 0.995);  I0 = Q~ - A
+ *   U0 = A min(0.95, u(x) lambda_U);  E0 = A - U0
+ *   INACTIVE = (1 - nu) I0;  UNEMP = (1 - nu) U0;  MATERNITY = nu E0;  PARENTAL = H + nu (I0 + U0)
+ *   SICK = (E0 - MATERNITY + K) min(0.6, p(x));  W = E0 - MATERNITY + K - SICK
+ *   EMP_PART = W min(1, pi(x) lambda_P);  EMP_FULL = W - EMP_PART
+ *   lambda_U and lambda_P are found by bisection so that UNEMP / (EMP + SICK + MATERNITY + UNEMP) and
+ *   EMP_PART / (EMP_FULL + EMP_PART) equal the targets exactly, also when the caps bind.
+ * Inputs:  population ({ male, female }: Float64Array(101), thousands)
+ *          labourInputs (output of buildLabourInputs)
+ *          profiles ({ retired, disabled, student, activity, unemployment, partTime, sick }: { male, female } number[101])
+ *          motherShares ({ newborn, toddler }: Float64Array(101), output of computeMotherShares; null = no mothers)
+ * Output:  { states: Float64Array(101*2*10) indexed [(age*2 + sex)*10 + state], totals: Float64Array(10),
+ *            payers, recipients, womenActivity25to45 (share, LFS concept), mothersAllocated, mothersDropped,
+ *            unemploymentScale, partTimeScale }
+ * Example: allocateLabourStates(pop2024, labourInputs, calibration.labour.profiles, motherShares).totals
+ */
+export function allocateLabourStates(population, labourInputs, profiles, motherShares) {
   const cohortCount = AGE_COUNT * 2;
   const states = new Float64Array(cohortCount * STATE_COUNT);
-  const activePersons = new Float64Array(cohortCount);
+  const activeBase = new Float64Array(cohortCount);
+  const inactiveBase = new Float64Array(cohortCount);
+  const newbornShare = new Float64Array(cohortCount);
+  const workingMothers = new Float64Array(cohortCount);
   const unemploymentPropensity = new Float64Array(cohortCount);
-  const workingPersons = new Float64Array(cohortCount);
+  const sickPropensity = new Float64Array(cohortCount);
   const partTimePropensity = new Float64Array(cohortCount);
+  const workingPersons = new Float64Array(cohortCount);
   const sexKeys = ['male', 'female'];
+  const homeShare = clamp(finiteOr(labourInputs.parentalHomeShare, DEFAULT_PARENTAL_HOME_SHARE), 0, 1);
+  const lfsShares = labourInputs.lfsActivityShares || DEFAULT_LFS_ACTIVITY_SHARES;
+  const womenActivityShift = finiteOr(labourInputs.womenActivityShift, 0);
+  let mothersAllocated = 0;
+  let mothersDropped = 0;
 
-  let activeTotal = 0;
-  let unemploymentRawTotal = 0;
-  let womenActive25to45 = 0;
-  let womenPopulation25to45 = 0;
-
-  // Pass 1: pensions, students, activity
+  // Pass 1: pensions, students, mothers of young children, activity
   for (let age = 0; age < AGE_COUNT; age++) {
     for (let sex = 0; sex < 2; sex++) {
       const sexKey = sexKeys[sex];
       const cohort = age * 2 + sex;
       const stateOffset = cohort * STATE_COUNT;
       const persons = Math.max(0, population[sexKey][age]);
-      if (sex === 1 && age >= 25 && age <= 45) womenPopulation25to45 += persons;
-      if (persons <= 0) continue;
+      if (!(persons > 0)) continue;
       if (age < CHILD_AGE_LIMIT) {
         states[stateOffset + STATE.STUDENT] = persons;
         continue;
@@ -365,58 +484,103 @@ export function allocateLabourStates(population, labourInputs, profiles, asfr) {
       const labourAge = effectiveLabourAge(age, labourInputs.retireAge[sex], labourInputs.retireAgeRef[sex], labourInputs.pivotAge);
       const retired = persons * clamp(interpolateProfile(profiles.retired[sexKey], labourAge), 0, 1);
       const disabledShare = clamp(interpolateProfile(profiles.disabled[sexKey], labourAge) * labourInputs.disabilityMultiplier, 0, 1);
-      const disabled = Math.min(persons - retired, persons * disabledShare);
-      const notPensioner = persons - retired - disabled;
+      const disabled = Math.max(0, Math.min(persons - retired, persons * disabledShare));
+      const notPensioner = Math.max(0, persons - retired - disabled);
       const students = notPensioner * clamp(interpolateProfile(profiles.student[sexKey], age - labourInputs.studyShift), 0, 1);
-      const remaining = notPensioner - students;
+      const pool = Math.max(0, notPensioner - students);
+
+      let newbornMothers = 0;
+      let toddlerMothers = 0;
+      if (sex === 1 && motherShares) {
+        const wantedNewborn = persons * Math.max(0, motherShares.newborn[age]);
+        const wantedToddler = persons * Math.max(0, motherShares.toddler[age]);
+        const wanted = wantedNewborn + wantedToddler;
+        if (wanted > 0) {
+          const factor = pool > 0 ? Math.min(1, MAX_MOTHER_SHARE * pool / wanted) : 0;
+          newbornMothers = wantedNewborn * factor;
+          toddlerMothers = wantedToddler * factor;
+          mothersAllocated += wanted * factor;
+          mothersDropped += wanted * (1 - factor);
+        }
+      }
+      const atHome = homeShare * toddlerMothers;
+      const remaining = pool - toddlerMothers;
+      const nu = remaining > 0 ? Math.min(1, newbornMothers / remaining) : 0;
 
       let activityShare = interpolateProfile(profiles.activity[sexKey], labourAge);
-      if (sex === 1 && age >= 25 && age <= 45) activityShare += labourInputs.womenActivityShift;
+      if (sex === 1 && age >= WOMEN_ACTIVITY_AGES[0] && age <= WOMEN_ACTIVITY_AGES[1]) activityShare += womenActivityShift;
       const active = remaining * clamp(activityShare, 0, MAX_ACTIVITY_SHARE);
 
       states[stateOffset + STATE.RETIRED] = retired;
       states[stateOffset + STATE.DISAB] = disabled;
       states[stateOffset + STATE.STUDENT] = students;
-      states[stateOffset + STATE.INACTIVE] = remaining - active;
-      activePersons[cohort] = active;
+      states[stateOffset + STATE.PARENTAL] = atHome;
+      activeBase[cohort] = active;
+      inactiveBase[cohort] = remaining - active;
+      newbornShare[cohort] = nu;
+      workingMothers[cohort] = toddlerMothers - atHome;
       unemploymentPropensity[cohort] = clamp(interpolateProfile(profiles.unemployment[sexKey], age), 0, 1);
-      activeTotal += active;
-      unemploymentRawTotal += active * unemploymentPropensity[cohort];
-      if (sex === 1 && age >= 25 && age <= 45) womenActive25to45 += active;
-    }
-  }
-
-  // Pass 2: unemployment (scaled to the aggregate target) and absences
-  const unemploymentScale = unemploymentRawTotal > 0
-    ? labourInputs.unemploymentRate * activeTotal / unemploymentRawTotal : 0;
-  let workingTotal = 0;
-  let partTimeRawTotal = 0;
-  for (let age = CHILD_AGE_LIMIT; age < AGE_COUNT; age++) {
-    for (let sex = 0; sex < 2; sex++) {
-      const cohort = age * 2 + sex;
-      const active = activePersons[cohort];
-      if (active <= 0) continue;
-      const sexKey = sexKeys[sex];
-      const stateOffset = cohort * STATE_COUNT;
-      const unemployed = active * Math.min(MAX_UNEMPLOYMENT_SHARE, unemploymentPropensity[cohort] * unemploymentScale);
-      const employed = active - unemployed;
-      const maternityShare = sex === 1 ? asfr[age] * labourInputs.maternityLeaveYears : 0;
-      const absentShare = Math.min(MAX_ABSENCE_SHARE, Math.max(0, interpolateProfile(profiles.sick[sexKey], age)) + maternityShare);
-      const absent = employed * absentShare;
-      states[stateOffset + STATE.UNEMP] = unemployed;
-      states[stateOffset + STATE.SICK_MAT] = absent;
-      workingPersons[cohort] = employed - absent;
+      sickPropensity[cohort] = clamp(interpolateProfile(profiles.sick[sexKey], age), 0, MAX_SICK_SHARE);
       partTimePropensity[cohort] = clamp(interpolateProfile(profiles.partTime[sexKey], age), 0, 1);
-      workingTotal += workingPersons[cohort];
-      partTimeRawTotal += workingPersons[cohort] * partTimePropensity[cohort];
     }
   }
 
-  // Pass 3: part-time vs full-time (scaled to the aggregate target)
-  const partTimeScale = partTimeRawTotal > 0 ? labourInputs.partTimeRate * workingTotal / partTimeRawTotal : 0;
+  // Unemployment scale: aggregate UNEMP / LFS-active equals the target (bisection handles the 0.95 cap)
+  const unemploymentTarget = clamp(finiteOr(labourInputs.unemploymentRate, 0), 0, MAX_UNEMPLOYMENT_SHARE);
+  const unemploymentRateAt = scale => {
+    let unemployed = 0;
+    let active = 0;
+    for (let cohort = 0; cohort < cohortCount; cohort++) {
+      const base = activeBase[cohort];
+      if (!(base > 0) && !(workingMothers[cohort] > 0)) continue;
+      const raw = base * Math.min(MAX_UNEMPLOYMENT_SHARE, unemploymentPropensity[cohort] * scale);
+      unemployed += (1 - newbornShare[cohort]) * raw;
+      active += base + workingMothers[cohort] - newbornShare[cohort] * raw;
+    }
+    return active > 0 ? unemployed / active : 0;
+  };
+  const unemploymentScale = bisectIncreasing(unemploymentRateAt, unemploymentTarget, 0,
+    saturationScale(unemploymentPropensity, activeBase, MAX_UNEMPLOYMENT_SHARE));
+
+  // Pass 2: unemployment, maternity, parental leave of non-employed new mothers, sick leave
+  for (let cohort = 0; cohort < cohortCount; cohort++) {
+    const base = activeBase[cohort];
+    const inactive = inactiveBase[cohort];
+    const working = workingMothers[cohort];
+    if (!(base > 0) && !(inactive > 0) && !(working > 0)) continue;
+    const stateOffset = cohort * STATE_COUNT;
+    const nu = newbornShare[cohort];
+    const unemployedRaw = base * Math.min(MAX_UNEMPLOYMENT_SHARE, unemploymentPropensity[cohort] * unemploymentScale);
+    const employedRaw = base - unemployedRaw;
+    const maternity = nu * employedRaw;
+    states[stateOffset + STATE.INACTIVE] = (1 - nu) * inactive;
+    states[stateOffset + STATE.UNEMP] = (1 - nu) * unemployedRaw;
+    states[stateOffset + STATE.MATERNITY] = maternity;
+    states[stateOffset + STATE.PARENTAL] += nu * (inactive + unemployedRaw);
+    const employedAtWork = employedRaw - maternity + working;
+    const sick = employedAtWork * sickPropensity[cohort];
+    states[stateOffset + STATE.SICK] = sick;
+    workingPersons[cohort] = employedAtWork - sick;
+  }
+
+  // Part-time scale: EMP_PART / (EMP_FULL + EMP_PART) equals the target (bisection handles the cap at 1)
+  let workingTotal = 0;
+  for (let cohort = 0; cohort < cohortCount; cohort++) workingTotal += workingPersons[cohort];
+  const partTimeTarget = clamp(finiteOr(labourInputs.partTimeRate, 0), 0, 1);
+  const partTimeShareAt = scale => {
+    if (!(workingTotal > 0)) return 0;
+    let partTime = 0;
+    for (let cohort = 0; cohort < cohortCount; cohort++) {
+      if (workingPersons[cohort] > 0) partTime += workingPersons[cohort] * Math.min(1, partTimePropensity[cohort] * scale);
+    }
+    return partTime / workingTotal;
+  };
+  const partTimeScale = bisectIncreasing(partTimeShareAt, partTimeTarget, 0, saturationScale(partTimePropensity, workingPersons, 1));
+
+  // Pass 3: part-time vs full-time
   for (let cohort = 0; cohort < cohortCount; cohort++) {
     const working = workingPersons[cohort];
-    if (working <= 0) continue;
+    if (!(working > 0)) continue;
     const stateOffset = cohort * STATE_COUNT;
     const partTime = working * Math.min(1, partTimePropensity[cohort] * partTimeScale);
     states[stateOffset + STATE.EMP_PART] = partTime;
@@ -427,10 +591,54 @@ export function allocateLabourStates(population, labourInputs, profiles, asfr) {
   for (let cohort = 0; cohort < cohortCount; cohort++) {
     for (let state = 0; state < STATE_COUNT; state++) totals[state] += states[cohort * STATE_COUNT + state];
   }
+
+  // Activity of women 25-45 in the LFS concept: employed (incl. sick and maternity leave) + unemployed,
+  // plus the assumed active shares of students and disability pensioners; parental leave is inactive.
+  let womenActive = 0;
+  let womenPopulation = 0;
+  for (let age = WOMEN_ACTIVITY_AGES[0]; age <= WOMEN_ACTIVITY_AGES[1]; age++) {
+    const offset = (age * 2 + 1) * STATE_COUNT;
+    womenPopulation += Math.max(0, population.female[age]);
+    womenActive += states[offset + STATE.EMP_FULL] + states[offset + STATE.EMP_PART] + states[offset + STATE.SICK]
+      + states[offset + STATE.MATERNITY] + states[offset + STATE.UNEMP]
+      + lfsShares.student * states[offset + STATE.STUDENT] + lfsShares.disabled * states[offset + STATE.DISAB];
+  }
+
   const payers = totals[STATE.EMP_FULL] + 0.5 * totals[STATE.EMP_PART];
-  const recipients = totals[STATE.UNEMP] + totals[STATE.SICK_MAT] + totals[STATE.DISAB] + totals[STATE.RETIRED];
-  const womenActivity25to45 = womenPopulation25to45 > 0 ? womenActive25to45 / womenPopulation25to45 : 0;
-  return { states, totals, payers, recipients, womenActivity25to45 };
+  const recipients = totals[STATE.UNEMP] + totals[STATE.SICK] + totals[STATE.MATERNITY] + totals[STATE.PARENTAL]
+    + totals[STATE.DISAB] + totals[STATE.RETIRED];
+  return {
+    states, totals, payers, recipients,
+    womenActivity25to45: womenPopulation > 0 ? womenActive / womenPopulation : 0,
+    mothersAllocated, mothersDropped, unemploymentScale, partTimeScale
+  };
+}
+
+/**
+ * Additive shift of the conditional activity of women 25-45 at which their LFS activity rate equals a target
+ * (bisection on [-1, 1]; the rate is non-decreasing in the shift). Used once per simulation on the base-year
+ * population with the default values of all other sliders.
+ * Inputs:  population ({ male, female }: Float64Array(101)), labourInputs (output of buildLabourInputs),
+ *          profiles (calibration.labour.profiles), motherShares (output of computeMotherShares),
+ *          targetShare (number, 0-1; NaN -> shift 0)
+ * Output:  { shift, achieved, minimum, maximum (shares 0-1), attainable (boolean) }
+ * Example: solveWomenActivityShift(pop2024, defaultInputs, profiles, motherShares, 0.82).shift
+ */
+export function solveWomenActivityShift(population, labourInputs, profiles, motherShares, targetShare) {
+  const rateAt = shift => allocateLabourStates(population, { ...labourInputs, womenActivityShift: shift }, profiles, motherShares).womenActivity25to45;
+  const minimum = rateAt(-1);
+  const maximum = rateAt(1);
+  if (!Number.isFinite(targetShare)) {
+    return { shift: 0, achieved: rateAt(0), minimum, maximum, attainable: false };
+  }
+  const shift = bisectIncreasing(rateAt, targetShare, -1, 1, 60);
+  return {
+    shift,
+    achieved: rateAt(shift),
+    minimum,
+    maximum,
+    attainable: targetShare >= minimum - 1e-9 && targetShare <= maximum + 1e-9
+  };
 }
 
 // ─── Age-structure indicators ───────────────────────────────────────────────
@@ -481,15 +689,19 @@ export function computeAgeIndicators(population) {
 
 /**
  * Run the projection and the labour allocation for every year of the horizon.
+ * The women-activity shift is solved once, on the base-year population with the DEFAULT values of all other
+ * sliders (calibration.defaults), so that the LFS activity rate of women 25-45 equals scenario.womenActivityLevel;
+ * the shift is then kept for all years (fertility and the other sliders move the actual rate).
  * Inputs:  startPopulation ({ male, female }: number[101], thousands on 1 January startYear)
  *          scenario ({ tfrTarget, migrationTarget (thousands), targetYear, e0MaleTarget, e0FemaleTarget,
- *                      retireAgeMale, retireAgeFemale, retireAgeLinkShare (0-1),
- *                      unemploymentRate (%), womenActivityChange (p.p.), partTimeRate (%),
+ *                      retireAgeMale, retireAgeFemale, retireAgeLinkShare (0-1), unemploymentRate (%),
+ *                      womenActivityLevel (%), parentalHomeShare (0-1), partTimeRate (%),
  *                      disabilityMultiplier, studyShift (years) })
  *          calibration (object from data/calibration.json), startYear, endYear (number, years)
- * Output:  { years: number[], snapshots: { [year]: { male, female } }, states: { [year]: Float64Array },
- *            series: { [indicator]: number[] aligned with years } }
- * Example: runSimulation(anchors['2024'], scenario, calibration, 2024, 2100).series.oldAgeDependency
+ * Output:  { years: number[], snapshots: { [year]: { male, female } }, states: { [year]: Float64Array(2020) },
+ *            series: { [indicator]: number[] aligned with years },
+ *            womenActivityFit: { target, achieved, minimum, maximum (%), shift, attainable } }
+ * Example: runSimulation(anchors['2024'], scenario, calibration, 2024, 2100).series.economicDependency
  */
 export function runSimulation(startPopulation, scenario, calibration, startYear, endYear) {
   const baseYear = calibration.baseYear;
@@ -499,7 +711,31 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
   const kappaTargetMale = solveKappaForLifeExpectancy(leeCarterMale, scenario.e0MaleTarget);
   const kappaTargetFemale = solveKappaForLifeExpectancy(leeCarterFemale, scenario.e0FemaleTarget);
   const labour = calibration.labour;
-  const womenActivityShift = scenario.womenActivityChange / 100;
+  const defaults = calibration.defaults || {};
+  const fertilityShape = calibration.fertility.shape;
+  const parentalHomeShare = clamp(finiteOr(scenario.parentalHomeShare, finiteOr(defaults.parentalHomeShare, DEFAULT_PARENTAL_HOME_SHARE)), 0, 1);
+
+  let population = {
+    male: Float64Array.from(startPopulation.male),
+    female: Float64Array.from(startPopulation.female)
+  };
+
+  // Women-activity level: shift solved once at the base year under the default values of the other sliders
+  const defaultInputs = buildLabourInputs(defaults, labour, [
+    finiteOr(defaults.retireAgeMale, labour.retireAgeRef.male),
+    finiteOr(defaults.retireAgeFemale, labour.retireAgeRef.female)
+  ], 0, finiteOr(defaults.parentalHomeShare, DEFAULT_PARENTAL_HOME_SHARE));
+  const baseMotherShares = computeMotherShares(population, fertilityShape, labour.maternityLeaveYears);
+  const targetShare = Number.isFinite(scenario.womenActivityLevel) ? scenario.womenActivityLevel / 100 : NaN;
+  const fit = solveWomenActivityShift(population, defaultInputs, labour.profiles, baseMotherShares, targetShare);
+  const womenActivityFit = {
+    target: 100 * targetShare,
+    achieved: 100 * fit.achieved,
+    minimum: 100 * fit.minimum,
+    maximum: 100 * fit.maximum,
+    shift: fit.shift,
+    attainable: fit.attainable
+  };
 
   const years = [];
   const snapshots = {};
@@ -507,15 +743,11 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
   const seriesKeys = [
     'total', 'male', 'female', 'children', 'working', 'seniors', 'oldAgeDependency', 'meanAge', 'medianAge',
     'births', 'deaths', 'netMigration', 'tfr', 'e0Male', 'e0Female', 'e65Male', 'e65Female',
-    'retireAgeMale', 'retireAgeFemale', 'payers', 'recipients', 'recipientsPer100Payers', 'womenActivity25to45'
+    'retireAgeMale', 'retireAgeFemale', 'payers', 'recipients', 'recipientsPer100Payers',
+    'economicOldAgeDependency', 'economicDependency', 'womenActivity25to45', 'maternity', 'parental', 'mothersDropped'
   ];
   const series = { stateTotals: [] };
   for (const key of seriesKeys) series[key] = [];
-
-  let population = {
-    male: Float64Array.from(startPopulation.male),
-    female: Float64Array.from(startPopulation.female)
-  };
   let e65UnisexBase = NaN;
 
   for (let year = startYear; year <= endYear; year++) {
@@ -523,7 +755,7 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
     const lifeTableMale = buildLifeTable(qxFromKappa(leeCarterMale, kappaTargetMale * mortalityProgress));
     const lifeTableFemale = buildLifeTable(qxFromKappa(leeCarterFemale, kappaTargetFemale * mortalityProgress));
     const tfr = linearPath(calibration.fertility.tfrBase, scenario.tfrTarget, baseYear, scenario.targetYear, year);
-    const asfr = buildAsfr(calibration.fertility.shape, tfr);
+    const asfr = buildAsfr(fertilityShape, tfr);
     const netMigrationTarget = linearPath(calibration.migration.netBase, scenario.migrationTarget, baseYear, scenario.targetYear, year);
     const migration = scaleMigration(calibration.migration, netMigrationTarget);
 
@@ -533,17 +765,10 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
     const retireAgeMale = clamp(scenario.retireAgeMale + retireAgeShift, RETIREMENT_AGE_BOUNDS[0], RETIREMENT_AGE_BOUNDS[1]);
     const retireAgeFemale = clamp(scenario.retireAgeFemale + retireAgeShift, RETIREMENT_AGE_BOUNDS[0], RETIREMENT_AGE_BOUNDS[1]);
 
-    const labourResult = allocateLabourStates(population, {
-      retireAge: [retireAgeMale, retireAgeFemale],
-      retireAgeRef: [labour.retireAgeRef.male, labour.retireAgeRef.female],
-      pivotAge: labour.pivotAge,
-      unemploymentRate: scenario.unemploymentRate / 100,
-      partTimeRate: scenario.partTimeRate / 100,
-      womenActivityShift,
-      disabilityMultiplier: scenario.disabilityMultiplier,
-      studyShift: scenario.studyShift,
-      maternityLeaveYears: labour.maternityLeaveYears
-    }, labour.profiles, asfr);
+    const motherShares = year === startYear ? baseMotherShares : computeMotherShares(population, fertilityShape, labour.maternityLeaveYears);
+    const labourResult = allocateLabourStates(population,
+      buildLabourInputs(scenario, labour, [retireAgeMale, retireAgeFemale], fit.shift, parentalHomeShare),
+      labour.profiles, motherShares);
     const ageIndicators = computeAgeIndicators(population);
 
     const step = projectOneYear(population, {
@@ -551,6 +776,7 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
       female: survivalRatios(lifeTableFemale)
     }, asfr, migration, calibration.sexRatioMaleShare);
 
+    const payers = labourResult.payers;
     years.push(year);
     snapshots[year] = population;
     states[year] = labourResult.states;
@@ -567,14 +793,19 @@ export function runSimulation(startPopulation, scenario, calibration, startYear,
     series.e65Female.push(lifeTableFemale.ex[65]);
     series.retireAgeMale.push(retireAgeMale);
     series.retireAgeFemale.push(retireAgeFemale);
-    series.payers.push(labourResult.payers);
+    series.payers.push(payers);
     series.recipients.push(labourResult.recipients);
-    series.recipientsPer100Payers.push(labourResult.payers > 0 ? 100 * labourResult.recipients / labourResult.payers : NaN);
+    series.recipientsPer100Payers.push(payers > 0 ? 100 * labourResult.recipients / payers : NaN);
+    series.economicOldAgeDependency.push(payers > 0 ? 100 * labourResult.totals[STATE.RETIRED] / payers : NaN);
+    series.economicDependency.push(payers > 0 ? 100 * (ageIndicators.total - payers) / payers : NaN);
     series.womenActivity25to45.push(100 * labourResult.womenActivity25to45);
+    series.maternity.push(labourResult.totals[STATE.MATERNITY]);
+    series.parental.push(labourResult.totals[STATE.PARENTAL]);
+    series.mothersDropped.push(labourResult.mothersDropped);
     series.stateTotals.push(Array.from(labourResult.totals));
 
     population = step.next;
   }
 
-  return { years, snapshots, states, series };
+  return { years, snapshots, states, series, womenActivityFit };
 }

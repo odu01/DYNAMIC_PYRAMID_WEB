@@ -88,21 +88,36 @@
           <span class="kpi-pill tone-neutral" id="kpiRatioPill"></span>
         </div>
         <div class="kpi-sub" id="kpiRatioReference"></div>
-        <div class="tooltip" id="ratioTooltip" role="tooltip">Poberatelia = starobní a invalidní dôchodcovia, nezamestnaní a osoby na PN či materskej. Platitelia = zamestnaní na plný úväzok + polovica čiastočných úväzkov. Zjednodušený ukazovateľ, nie fiškálny tok. Farba porovnáva s rokom 2024 pri predvolených predpokladoch.</div>
+        <div class="tooltip" id="ratioTooltip" role="tooltip">Poberatelia = starobní a invalidní dôchodcovia, nezamestnaní a osoby na PN, materskej a rodičovskej (doma). Platitelia = zamestnaní na plný úväzok + polovica čiastočných úväzkov (prepočet, nie počet osôb; bez osôb na PN a materskej). Zjednodušený ukazovateľ, nie fiškálny tok. Farba porovnáva s rokom 2024 pri predvolených predpokladoch.</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">Starobná závislosť</div>
+        <div class="kpi-label">Demografická závislosť starších
+          <button type="button" class="info-button" id="dependencyInfoButton" aria-label="Vysvetlenie: demografická závislosť starších" aria-describedby="dependencyTooltip">i</button>
+        </div>
         <div class="kpi-row"><span class="kpi-value" id="kpiDependencyValue">—</span></div>
-        <div class="kpi-sub">osôb 65+ na 100 osôb vo veku 20–64</div>
+        <div class="kpi-sub" id="kpiDependencyReference"></div>
+        <div class="tooltip" id="dependencyTooltip" role="tooltip">Počet osôb vo veku 65 a viac rokov na 100 osôb vo veku 20–64 rokov (konvencia správy Ageing Report Európskej komisie; Eurostat používa aj menovateľ 15–64). Závisí len od vekovej štruktúry, nie od trhu práce.</div>
       </div>
       <div class="kpi">
-        <div class="kpi-label">Obyvateľstvo</div>
-        <div class="kpi-row"><span class="kpi-value" id="kpiPopulationValue">—</span></div>
-        <div class="kpi-sub" id="kpiPopulationChange"></div>
+        <div class="kpi-label">Ekonomická závislosť starších
+          <button type="button" class="info-button" id="economicOldInfoButton" aria-label="Vysvetlenie: ekonomická závislosť starších" aria-describedby="economicOldTooltip">i</button>
+        </div>
+        <div class="kpi-row"><span class="kpi-value" id="kpiEconomicOldValue">—</span></div>
+        <div class="kpi-sub" id="kpiEconomicOldReference"></div>
+        <div class="tooltip" id="economicOldTooltip" role="tooltip">Poberatelia starobného a predčasného dôchodku na 100 platiteľov daní a odvodov (plné úväzky + polovica čiastočných). Nejde o ukazovateľ EK „economic old-age dependency ratio“ (neaktívni 65+ na 100 zamestnaných 20–64). Pracujúci dôchodcovia sa v modeli medzi platiteľov nerátajú.</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Celková ekonomická závislosť
+          <button type="button" class="info-button" id="economicInfoButton" aria-label="Vysvetlenie: celková ekonomická závislosť" aria-describedby="economicTooltip">i</button>
+        </div>
+        <div class="kpi-row"><span class="kpi-value" id="kpiEconomicValue">—</span></div>
+        <div class="kpi-sub" id="kpiEconomicReference"></div>
+        <div class="tooltip" id="economicTooltip" role="tooltip">Všetci obyvatelia okrem platiteľov – deti, študenti, neaktívni, nezamestnaní, osoby na PN, materskej a rodičovskej, dôchodcovia a polovica čiastočných úväzkov – na 100 platiteľov. Neplatitelia + platitelia = obyvateľstvo. Za osoby na materskej a rodičovskej platí poistné štát. Vyššia plodnosť index najprv zvýši (viac detí a matiek doma) a zníži ho, až keď deti vstúpia na trh práce.</div>
       </div>
     </div>
 
     <section class="card pyramid-card" aria-label="Populačná pyramída">
+      <p class="pyramid-caption" id="pyramidCaption" aria-live="off"></p>
       <div class="pyramid" id="pyramidContainer"><p class="loading">Načítavam dáta…</p></div>
       <div class="legend" id="legend" aria-label="Legenda – kliknutím skryjete alebo zobrazíte kategóriu"></div>
     </section>
@@ -133,9 +148,11 @@
     <section class="stat-group">
       <h2>Trh práce</h2>
       <dl>
-        <div><dt>Platitelia</dt><dd id="statPayers">—</dd></div>
+        <div><dt>Platitelia (prepočítaní)</dt><dd id="statPayers">—</dd></div>
         <div><dt>Poberatelia</dt><dd id="statRecipients">—</dd></div>
-        <div><dt>Aktivita žien 25–45</dt><dd id="statWomenActivity">—</dd></div>
+        <div><dt>Na materskej</dt><dd id="statMaternity">—</dd></div>
+        <div><dt>Na rodičovskej (doma)</dt><dd id="statParental">—</dd></div>
+        <div><dt>Aktivita žien 25–45 (VZPS)</dt><dd id="statWomenActivity">—</dd></div>
       </dl>
     </section>
     <section class="stat-group">
